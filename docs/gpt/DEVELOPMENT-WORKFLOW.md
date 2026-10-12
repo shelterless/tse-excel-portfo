@@ -1,27 +1,38 @@
-# Development, Testing & Delivery Workflow
+# Development Workflow — PO, ChatGPT, Codex/Astra
 
-## رویکرد کار
+## Role-driven lifecycle
 
-کاربر تحویل قابلیت یکپارچه می‌خواهد، نه آزمایش‌های خرد و پیاپی. برای هر درخواست اجرایی، ابتدا وابستگی‌های لازم را از `main` و سند مرتبط بررسی کن؛ اگر داده‌ای برای تصمیم حیاتی کم است **یک پرسش مشخص** مطرح کن. پس از رفع مانع، یک تغییر کامل و قابل استفاده همراه تست مرتبط و راهنمای اجرای مختصر تحویل بده.
+1. **PO defines the need.** The user, acting as Product Owner, sets goals, priorities and scope.
+2. **ChatGPT advises and clarifies.** Inspect source **read-only** on verified `main`, read [OPERATING-CONTRACT](OPERATING-CONTRACT.md) and task-specific documents, identify tradeoffs and ask about material ambiguity.
+3. **ChatGPT proposes the work package.** Define boundaries, design considerations, risks, acceptance criteria and test requirements. The PO confirms the scope.
+4. **ChatGPT writes a professional Codex/Astra prompt** conforming to [CODEX-HANDOFF](CODEX-HANDOFF.md) and [ENGINEERING-STANDARDS](ENGINEERING-STANDARDS.md), with current reference URLs and explicit **no-commit** constraints.
+5. **Codex/Astra implements** C# source and automated tests in the development workspace. No commits, pushes, tags, PRs or releases.
+6. **Codex/Astra reports technical verification** using actual commands/results; any environment-dependent Excel test remains clearly pending when not executable.
+7. **PO runs local tests and acceptance checks**, including the real workbook/Excel where relevant, and approves or rejects the implementation.
+8. **PO personally commits/pushes source** only after accepting the local result. ChatGPT does not do source writes, even if technically connected to GitHub.
 
-## مسیر کار پیشنهادی
+## Documentation lifecycle — separate approval gate
 
-1. **Discover**: ساختار واقعی repo، فایل‌های موجود، branch/commit و قراردادهای مربوط را بخوان؛ چیزی را که ندیده‌ای موجود یا اجراشده نخوان.
-2. **Clarify**: تعارض، تصمیم جدید، تغییر خطرناک اسکیمای Excel، مجوز داده و رفتار نامشخص را قبل از اجرا با کاربر حل کن.
-3. **Implement**: کوچک‌ترین برش عمودی کامل را با جداسازی C# Core / TSETMC / Add-in، بدون VBA، انجام بده؛ ساختار پیشنهادی را با واقعیت Repo تطبیق بده.
-4. **Verify**: Build، تست واحد منطق، تست رفتار خطا و تا جای ممکن تست Excel واقعی. ادعای پاس‌شدن Build/Excel تنها با اجرای موفق و شاهد.
-5. **Deliver**: تغییرات و فایل‌ها، نحوه استفاده، محدودیت‌های واقعی، وضعیت GitHub و SHA commit را گزارش کن. اگر به سیستم Excel کاربر دسترسی نیست، شفاف بگو که تست یکپارچه محلی هنوز باقی است.
-6. **Document**: در صورت اثر معماری/قراردادی، تغییر پیشنهادی مستندات کانتکس را مطرح کن؛ **با تأیید کاربر** آن را روی `main` ثبت کن و هماهنگ‌سازی Project Sources را گزارش کن.
+1. ChatGPT proposes documentation changes and prepares the **finished English draft**.
+2. **PO reads and explicitly approves** the completed draft. Prior discussions and informal agreement with the idea are not sufficient approval to commit its final wording.
+3. ChatGPT then updates and **commits documentation only** directly to `main`, checks its final contents, and reports exact paths/commit SHA.
+4. PO replaces the changed documents in ChatGPT Project Sources. Replace ChatGPT Project Instructions **only when** `PROJECT-INSTRUCTIONS.md` changed.
 
-## قواعد مهندسی
+## Definition of ready for Codex/Astra
 
-- در فاز اول اجرای محلی Windows Excel افزونه C# / Excel-DNA هدف است؛ سازگاری دقیق سیستم عامل/Office و Target .NET باید پیش از پیاده‌سازی نهایی بررسی و تصویب شود.
-- داده‌های واقعی Workbook و API را برای تعیین قرارداد بررسی کن؛ نمونه را به واقعیت همه بازار تعمیم نده.
-- هیچ فایل شخصی، رمز/کلید یا خروجی کارگزاری در مخزن عمومی commit نشود؛ داده تستی مصنوعی یا ناشناس‌شده باشد.
-- از دست‌کاری بی‌مورد فایل‌های کاربر، حذف داده‌ها و تغییر فرمول بدون تأیید جلوگیری کن.
-- تست‌های تکرارپذیر را تا حد ممکن در مخزن نگه دار؛ یک اجرای end-to-end برای تأیید تجربه کاربر کافی باشد، نه چرخه تست‌های دستی کوچک.
-- تغییرات خارج از درخواست یا فاز آتی (Auto-Updater، License Server، Backend، Python Engine) بدون تصویب وارد پروژه نشوند.
+A work package must have sufficiently clear product behavior, approved boundaries, authoritative references, data contracts, testable acceptance criteria and compatibility assumptions (or explicitly labeled unresolved prerequisites). If a material decision is open, ask the PO first.
 
-## وضعیت توسعه
+## Definition of done for source delivery
 
-در زمان ایجاد این سند **صرفاً مستندات پروژه ثبت شده‌اند**؛ کد C#، پروژه Build، تست اتوماتیک، افزونه XLL و نصب‌کننده هنوز به‌عنوان انجام‌شده تأیید نشده‌اند.
+- Functionality satisfies agreed acceptance conditions.
+- Type-safe, maintainable C# conforms to OOP/SOLID and relevant standards.
+- Automated unit tests exist for **every** code change, with meaningful negative cases; relevant integration/contract tests included.
+- Build/test results are reported honestly and any unavailable check is disclosed.
+- Workbook values, user formulas, manual columns and private data are protected.
+- PO has run required local verification and accepted the result **before committing**.
+
+Avoid lengthy rounds of manual micro-tests. Prefer cohesive implementation and one PO acceptance pass, supported by developer-run automated tests.
+
+## Phase boundary
+
+Initial target: locally built C#/.NET + Excel-DNA Windows Excel add-in. Auto-Updater, license management, hosted backend, monetization and Python are out of the MVP. Exact .NET/Excel-DNA versions, Office compatibility and installer approach remain PO decisions.

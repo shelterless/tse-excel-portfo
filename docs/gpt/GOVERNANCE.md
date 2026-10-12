@@ -1,34 +1,38 @@
-# Repository & ChatGPT Context Governance
+# Repository Governance and ChatGPT Context Synchronization
 
-## مرجع
+## Source of truth and language
 
-- Repository: `shelterless/tse-excel-portfo`
-- Canonical branch: `main`.
-- در آغاز هر کار، فقط فایل‌های مرتبط را بر اساس `docs/gpt/README.md` از نسخه فعلی `main` بخوان.
-- گفته جدید و صریح کاربر ممکن است سند را اصلاح کند؛ تناقض مؤثر بدون سؤال رفع نمی‌شود.
-- ChatGPT Project Sources و Project Instructions **نسخه کپی‌شده** هستند و با GitHub به‌طور خودکار همگام نمی‌شوند.
+- Repository: `shelterless/tse-excel-portfo`; canonical branch: `main`.
+- At the beginning of **every conversation**, read [OPERATING-CONTRACT](OPERATING-CONTRACT.md) and [Context Index](README.md); only load other task-relevant files.
+- PO/ChatGPT conversation is **Persian**; all repository documents, source comments/docstrings and work-package artifacts are **English** unless the PO explicitly directs an exception.
+- A newer explicit PO decision takes precedence over stale contextual copies. Conflicts affecting behavior or scope require clarification.
 
-## اصلاح مستندات کانتکس
+## Write-access matrix
 
-1. وقتی نیاز جدید، تغییر قرارداد یا تصمیم معماری مشخص شد، فایل‌های متأثر و تغییر پیشنهادی را خلاصه و دلیلش را بیان کن.
-2. **قبل از تغییر فایل‌های `docs/gpt/`، تأیید کاربر را بگیر.** این شامل Decision Log و Bootstrap است؛ دستور صریح و حاضر کاربر برای ایجاد اولیه این اسناد، تأیید همان کار است.
-3. پس از تأیید، فایل‌های لازم را در `main` تغییر بده؛ از بازنویسی غیرضروری سایر اسناد بپرهیز.
-4. نتیجه واقعی نوشتن GitHub و SHA/لینک commit را گزارش کن. اگر انجام نشد، صریحاً بگو انجام نشده است.
-5. نام فایل‌های تغییریافته را برای Replace در ChatGPT Project Sources اعلام کن.
-6. **فقط در صورت تغییر `docs/gpt/PROJECT-INSTRUCTIONS.md`** صریحاً به کاربر بگو متن جدید را در ChatGPT Project Instructions کپی/جایگزین کند. تغییر سایر فایل‌ها نباید چنین اعلانی ایجاد کند.
-7. تصمیم‌های پایدار مهم را در `DECISIONS.md` و تغییرات باارزش تاریخی را در `CHANGELOG.md` ثبت کن، بدون تبدیل پیشنهاد به تصمیم مصوب.
+| Actor | Read source | Edit source/tests/build files | Commit/push source | Draft documentation | Commit documentation to `main` |
+|---|---|---|---|---|---|
+| **PO (user)** | Yes | As owner | **Exclusive authority, after local tests** | Approves | May directly if desired |
+| **ChatGPT** | **Read-only** | **Never** | **Never** | Yes | **Yes, only after PO approval of the finished draft** |
+| **Codex/Astra** | Yes, for implementation | Yes, in uncommitted working tree | **Never** | Only when task explicitly calls for it; context governance remains PO/ChatGPT-controlled | **Never** |
 
-## قواعد نوشتن کد و GitHub
+ChatGPT's ability to write documentation does **not** grant permission to modify any `.cs`, tests, `.sln`, `.csproj`, configuration, scripts, runtime artifacts, workbook, release pipeline or source-adjacent implementation files. If a requested documentation change would necessarily change code, send that code task through the PO → Codex/Astra workflow instead.
 
-- برای اعمال تغییری که کاربر صریحاً درخواست و مجاز کرده است، روی `main` کار کن مگر خود او برنچ/PR بخواهد.
-- در هر نوشتن، آخرین `main` و وضعیت فایل هدف را بررسی کن، از حذف/بازنویسی ناخواسته اجتناب کن، و نتیجه را read-back کن.
-- درخواست‌های مبهم یا اثرگذار بر داده مشتری، API، مالکیت فکری، رفتار مالی و معماری، قبل از تغییر نیازمند سؤال و تأییدند.
-- اسناد معماری صرفاً تعهد به تصمیم‌های ثبت‌شده‌اند؛ استفاده از مسیرهای «پیشنهادی» به معنی ساخت فایل یا راه‌اندازی ابزار نیست.
-- اطلاعات حساس، کلیدها، داده معاملات اشخاص، فایل بورسی خصوصی و سورس ارزشمند تجاری را بدون مجوز صریح به‌خصوص در ریپوی Public ننویس.
-- این ریپو کد ابزار Excel است؛ داده حسابداری/وضعیت پرتفوی شخصی را از مخازن مالی دیگر به اینجا منتقل نکن.
+## Documentation approval procedure
 
-## همگام‌سازی ChatGPT Project
+1. ChatGPT reads the current documents on `main` and prepares the complete, coherent **English proposal**.
+2. ChatGPT presents the **finished draft** and the proposed changed-file list to the PO. **Do not write GitHub yet.**
+3. PO explicitly approves the draft (possibly with corrections). If revised, present the updated version for approval where material.
+4. ChatGPT writes **documentation files only** to `main`, avoiding unrelated rewrites, and reads back the final files. Report actual commits and changed paths. If GitHub write fails, say so without claiming completion.
+5. PO replaces only affected copied ChatGPT Project Sources.
+6. **Only if `docs/gpt/PROJECT-INSTRUCTIONS.md` changes**, tell the PO to copy its new full contents into ChatGPT Project Instructions.
+7. Record approved lasting decisions in [DECISIONS](DECISIONS.md) and material documentation changes in [CHANGELOG](CHANGELOG.md).
 
-- **Project Instructions**: متن کامل و دقیق `docs/gpt/PROJECT-INSTRUCTIONS.md`، حداقلی و پایدار.
-- **Project Sources**: فایل‌های دیگر `docs/gpt/` که در ChatGPT به‌صورت نسخه کپی بارگذاری می‌شوند؛ کاربر هنگام تغییر آن‌ها، نسخه جدید را جایگزین می‌کند.
-- در صورت امکان دسترسی زنده GitHub را به‌عنوان منبع اصلی در نظر بگیر؛ اگر ابزار/مجوز فعلی دسترسی نمی‌دهد، محدودیت را شفاف بیان کن و به نسخه قدیمی استناد قطعی نکن.
+## Codex/Astra delivery and Git rule
+
+Codex/Astra must not commit, push, tag, publish, open/merge PRs or alter GitHub release state. It hands uncommitted code and tests to the PO, reports verified tests/builds, and the PO runs local acceptance tests before personally committing source. ChatGPT may review those source changes but **must not make them**.
+
+## Security and other boundaries
+
+- The repository was public when the context was drafted. Never commit credentials, brokerage/portfolio exports, customer data or proprietary algorithms to public Git.
+- Do not treat this repository as canonical personal-portfolio accounting. It is a software product repository.
+- Proposal paths and folder trees are not proof a C# implementation exists. Verify repository state before discussing it as implemented.

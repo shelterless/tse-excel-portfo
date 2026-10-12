@@ -1,37 +1,33 @@
-# TSETMC Data Reliability & Failure Policy
+# TSETMC Data Reliability and Failure Semantics
 
-## اصل محوری
+## Invariants
 
-**داده موجود نیست / نماد متوقف است / داده قدیمی است / درخواست شکست خورد، چهار وضعیت متفاوت‌اند.** هیچ‌یک را بی‌دلیل به صفر تبدیل نکن. نمایش اطلاعات بازار نباید حس کاذب از لحظه‌ای‌بودن یا قطعیت ایجاد کند.
+**No record**, **halted security**, **stale snapshot**, **valid zero** and **failed API request** are not interchangeable. Never erase a useful prior value merely because the current API response is incomplete, and never describe old data as live without evidence.
 
-## شواهد پیشین
+## Evidence from the prior workbook prototype
 
-- نمونه `GetMarketWatch` در تست‌های قبلی حدود ۳٬۳۷۵ رکورد و `GetClientTypeAll` حدود ۲٬۴۰۱ رکورد داشته است؛ این اعداد ثابت و تضمین آینده نیستند.
-- شپنا و فگستر در پاسخ گروهی نبودند اما `GetClosingPriceInfo` تاریخ، قیمت و وضعیت «ممنوع-متوقف» را برگرداند.
-- `GetClientTypeAll` در پاسخ تست‌شده تاریخ مستقل `recDate` نداشت. بنابراین برابری ساعت قیمت گروهی و اختصاصی، **تازگی ClientType را ثابت نمی‌کند**.
-- خطای پیش‌پرواز «ClientType coverage below safe threshold: 2.9%» قبلاً دیده شد؛ احتمال وابستگی پوشش به زمان انتشار داده وجود دارد، ولی بدون شاهد مستقل علت قطعی نیست.
+- One successful bulk MarketWatch test returned approximately 3,375 records, while ClientType returned approximately 2,401. These are **historical observations**, not stable coverage guarantees.
+- SHPNA and FGOSTAR were missing in the bulk snapshot, while individual `GetClosingPriceInfo` responses returned valid prices and halted status `IS`.
+- The ClientType DTO checked in the earlier test did not expose an independent verified `recDate`. Matching price timestamps **cannot establish** the freshness of ClientType metrics.
+- A preflight check later reported `ClientType coverage below safe threshold: 2.9%`. Data-publication timing is a hypothesis, not a verified root cause.
 
-## رفتار مورد انتظار MVP
+## Recommended safety behavior for the MVP
 
-1. داده را دریافت کن و HTTP status، صحت JSON، ساختار، نوع فیلد، دامنه مقادیر، همخوانی InsCode و زمان/تاریخ قابل‌دسترس را بررسی کن.
-2. اول همه ردیف‌ها را در حافظه به نتیجه طبقه‌بندی کن؛ سپس با سیاست روشن اعمال کن. از پاک‌سازی کلی جدول در پاسخ ناقص جلوگیری کن.
-3. اگر MarketWatch نمادی را پیدا نکرد، برای اعتبارشناسی و وضعیت از API اختصاصی استفاده کن؛ آن را خودکار HALTED یا NOT_FOUND ننام.
-4. برای نماد HALTED، وضعیت توقف و آخرین اطلاعات معتبر همراه با تاریخ آنها را نشان بده؛ صف سفارش قدیمی را به شکل «صف فعلی» نمایش نده.
-5. اگر ClientType یا هر منبع دیگر داده نداشت، سایر فیلدهای مستقل که معتبرند می‌توانند به‌روز شوند؛ فیلدهای وابسته را بی‌علامت صفر نکن. ترجیحاً وضعیت کیفیت داده در UI/لاگ قابل مشاهده باشد.
-6. در شکست HTTP، timeout یا JSON نامعتبر، مقدار قبلی را حفظ کن و خطا/قدیمی‌بودن را گزارش کن؛ اگر شواهدی بر نبود حقیقی مقدار وجود ندارد، صفر ننویس.
-7. حالت‌های `ACTIVE`، `HALTED`، `UNKNOWN` را از کد اصلی API استخراج کن؛ کد ناشناخته را با حدس نگاشت نکن. `UnderSupervision` جانشین وضعیت معاملاتی نیست.
-8. تغییر عمده تعداد رکوردها یا پوشش غیرعادی یک هشدار مهم است؛ آستانه‌های عددی باید از تست واقعی و تصمیم ثبت‌شده بیایند، نه حدس یا شرط دائمی سخت.
-9. اعداد و زمان‌ها را با واحد و منطقه زمانی درست تعبیر کن؛ ساعت سیستم و آخرین روز معاملاتی، به‌ویژه آخرهفته/تعطیلی/توقف، لزوماً یکسان نیستند.
-10. از فرض «Refresh completed = تمام داده‌ها تازه و قابل معامله‌اند» اجتناب کن؛ گزارش خروجی باید موفق، ناقص، قدیمی، متوقف و خطا را جداگانه نمایش دهد.
+1. Validate HTTP status, JSON structure, mandatory fields, units, instrument identity, ranges and available timestamps before mapping response data to workbook fields.
+2. Build a coherent in-memory refresh result before writing where practical. Treat a sudden collapse in bulk coverage as a data-quality warning, not proof that all missing symbols are invalid.
+3. If a security is absent from MarketWatch, consult a reliable individual instrument endpoint; do **not** infer `HALTED` or `NOT_FOUND` solely from bulk absence.
+4. For `HALTED` securities, show state and last known valid quotes with their actual trading timestamp. Do **not** present obsolete order-book queues as current.
+5. Handle ClientType availability **independently** of valid price refreshes. When participant data is absent, keep prior metrics labeled as stale/unavailable rather than writing fabricated zeroes.
+6. On network, timeout, malformed response or mapping error, preserve existing user data and report the failure and affected fields. Distinguish partial success from total success.
+7. Map confirmed API status codes only. Earlier verified values were `A` → `ACTIVE` and `IS` → `HALTED`; any new code is `UNKNOWN` pending verification. `UnderSupervision` is not a trading-state substitute.
+8. Market-day freshness must account for holidays, weekends, closed hours and securities without trades. The computer's calendar date alone is not a reliable trading-day oracle.
+9. Validate all financial units: quote prices, volumes, estimated retail value in IRR and exchange-reported turnover. Avoid silently interpreting IRR as IRT.
+10. Provide explicit diagnostics for successful, partial, stale, halted, unavailable and failed results. `Refresh completed` does **not** prove all fields current or tradable.
 
-## کنترل صحت داده
+## Test matrix
 
-- `InsCode`: رشته رقم‌دار، بدون اتکا به عدد floating point اکسل. اشتباه/نامعتبر را از نماد متوقف جدا کن.
-- قیمت و حجم: بازه و سازگاری فیلدها کنترل شوند؛ `null` و `0` معنی یکسان ندارند.
-- پول حقیقی نمونه: `volume × lastPrice` تخمینی و به ریال است؛ در نام و راهنمای کاربر ادعای مبلغ دقیق نکن.
-- برای داده‌های مأخوذ از منابع مختلف، زمان/روز snapshots را تا حد امکان قابل مقایسه و قابل گزارش کن.
-- آزمون‌های واقعی شامل: فعال، متوقف، شناسه غلط، نبود ClientType، پاسخ تهی/جزئی، HTTP error، بازار بسته، نسبت قیمت و صف و حفاظت از فرمول باشند.
+Automated unit tests must cover active/halted/unknown instruments, long exact IDs, invalid IDs, empty/partial MarketWatch, missing ClientType, unknown status codes, bad JSON, HTTP errors, date and queue mismatch, zero versus null, formula protection and multi-source inconsistency. Contract/integration tests should target external adapters; Excel-dependent end-to-end checks should be handed to the PO for local execution.
 
-## مسائل باز
+## Open decisions
 
-تعریف دقیق SLA/تأخیر داده، پوشش کل نمادهای ایران، دسترسی قانونی و سهمیه API، و معیار عددی preflight تا زمان تحقیق و تأیید صریح **نامشخص** هستند. تست‌های گذشته جای قرارداد رسمی API را نمی‌گیرند.
+The official API's availability, rate limits, legal/commercial terms, latency guarantees, caching, acceptable coverage thresholds and production freshness SLA remain **unresolved** until independently verified and approved. Prior successful prototype calls do not constitute a formal API contract.

@@ -1,70 +1,75 @@
-# Workbook Contract — Current VBA Prototype Baseline
+# Workbook Contract — Observed Legacy Prototype
 
-> **وضعیت:** این سند قرارداد **مشاهده‌شده در نمونه Excel قبلی** است، نه تأیید اسکیمای نهایی محصول C#. پیش از اولین پیاده‌سازی/مهاجرت، نسخه واقعی Workbook و اسامی دقیق ستون‌ها و فرمول‌ها باید بررسی شوند.
+> **Status:** This describes the **previous Excel/VBA prototype**, not a final, approved workbook schema for the C# add-in. Obtain and inspect the real workbook before final implementation or migration. The column list is a historical baseline only.
 
-## محل و مالکیت ستون‌ها
+## Observed worksheet and table
 
-شیت نمونه `Symbols`؛ نام Excel Table: `TblSymbols`. ستون‌های نمونه به ترتیب:
+Worksheet: `Symbols`; Excel table: `TblSymbols`.
 
-| ستون | مالکیت / معنی |
-|---|---|
-| `Symbol` | دستی: نماد |
-| `FullName` | دریافتی: نام کامل |
-| `InsCode` | دستی، **Text**؛ کلید تطبیق با TSETMC |
-| `ISIN` | دستی؛ شناسه ابزار، در صورت موجودبودن |
-| `TradingStatus` | افزوده‌شده به نمونه؛ وضعیت از API اختصاصی، بعد از ISIN |
-| `LastPrice` | دریافتی؛ آخرین قیمت |
-| `LastChangePct` | محاسبه‌شده از آخرین قیمت نسبت به قیمت مبنا/روز قبل؛ fraction اکسل، نمایش % |
-| `BuyValue` | **تخمین** ارزش خرید حقیقی‌ها (ریال) |
-| `BuyerCount` | تعداد خریداران حقیقی |
-| `SellValue` | **تخمین** ارزش فروش حقیقی‌ها (ریال) |
-| `SellerCount` | تعداد فروشندگان حقیقی |
-| `BuyQueueVol` | حجم صف خرید؛ مشروط به داده معتبر مظنه و حدود قیمت |
-| `SellQueueVol` | حجم صف فروش |
-| `BuyPerCapita` | فرمول محلی کاربر؛ سرانه خرید حقیقی |
-| `SellPerCapita` | فرمول محلی کاربر؛ سرانه فروش حقیقی |
-| `PE` | دریافتی؛ P/E در صورت وجود |
-| `ClosePrice` | قیمت پایانی |
-| `TradeValue` | ارزش معاملات؛ واحد مطابق داده مبنا بررسی شود |
-| `BuyerPower` | فرمول محلی؛ نسبت سرانه خرید به فروش |
-| `NetRealMoneyFlow` | تخمین خالص پول حقیقی: BuyValue − SellValue |
-
-کاربر پیشنهاد ستون نمایشی `وضعیت` را داده و فرمولی دریافت کرده است؛ **تأیید درج آن در فایل واقعی نداریم**. اگر این ستون موجود باشد، مالکیت آن با فرمول/کاربر است، نه Refresh افزونه.
-
-## محاسبات نمونه
-
-- `BuyValue = buy_I_Volume × LastPrice` و `SellValue = sell_I_Volume × LastPrice`: تقریب ارزش ریالی، **نه مبلغ قطعی معاملات بر اساس قیمت تک‌تک اجراها**.
-- `BuyPerCapita = IF(BuyerCount>0, BuyValue/BuyerCount, 0)`؛ `SellPerCapita` مشابه.
-- `BuyerPower = IF(SellPerCapita>0, BuyPerCapita/SellPerCapita, 0)`.
-- `NetRealMoneyFlow = BuyValue − SellValue`.
-- `LastChangePct = (pdv/py)-1` در نمونه، مشروط به `py>0`.
-
-این فرمول‌ها از الگوی قبلی می‌آیند؛ در اولین محصول C# نباید بی‌اجازه جایگزین تعریف تجاری/مالی شوند. ریال و تومان را یکسان فرض نکن.
-
-## وضعیت نماد
-
-در تست‌های واقعی این نگاشت تأیید شده است:
-
-| API `instrumentState.cEtaval` | عنوان `cEtavalTitle` | مقدار استاندارد |
+| Field | Ownership | Meaning / caveat |
 |---|---|---|
-| `A ` | مجاز | `ACTIVE` |
-| `IS` | ممنوع-متوقف | `HALTED` |
-| کد دیگر/غایب | بررسی‌نشده | `UNKNOWN`؛ کد خام را برای عیب‌یابی نگه دار |
+| `Symbol` | User | Ticker label, editable |
+| `FullName` | Data | Long security name |
+| `InsCode` | User | **Text identifier**; digits must be preserved exactly |
+| `ISIN` | User | Instrument ISIN, where known |
+| `TradingStatus` | Data | Added to legacy table after `ISIN`; derived from individual instrument state |
+| `LastPrice` | Data | Last traded price |
+| `LastChangePct` | Data calculation | Excel numeric fraction, shown as percent |
+| `BuyValue` | Derived data | **Estimated** retail buy value, in IRR |
+| `BuyerCount` | Data | Retail buyer count |
+| `SellValue` | Derived data | **Estimated** retail sell value, in IRR |
+| `SellerCount` | Data | Retail seller count |
+| `BuyQueueVol` | Data calculation | Buy queue volume if order book and price limits are trustworthy |
+| `SellQueueVol` | Data calculation | Sell queue volume |
+| `BuyPerCapita` | User formula | Retail purchase value per buyer |
+| `SellPerCapita` | User formula | Retail sale value per seller |
+| `PE` | Data | P/E, nullable/unavailable in some responses |
+| `ClosePrice` | Data | Closing price |
+| `TradeValue` | Data | Exchange-reported traded value; confirm original units |
+| `BuyerPower` | User formula | Buy-per-capita / sell-per-capita when denominator > 0 |
+| `NetRealMoneyFlow` | Derived data | Estimated `BuyValue - SellValue` |
 
-شپنا (`7745894403636165`) و فگستر (`8725363201030474`) با وجود غیبت در MarketWatch، در API اختصاصی وضعیت `IS` و قیمت معتبر داشته‌اند. **MarketWatch missing ≠ halted ≠ invalid InsCode**.
+A later user-discussed display column (originally titled in Persian, meaning **Status**) may be formula-driven; its presence in the current workbook has **not been verified**. The add-in must not overwrite any user-owned formula column.
 
-منطق پیشنهادی ستون فرمولی «وضعیت» (فقط اگر کاربر آن ستون را در Workbook داشته باشد): HALTED → بسته؛ ACTIVE و صف خرید > 0 → صف خرید؛ ACTIVE و صف فروش > 0 → صف فروش؛ ACTIVE → عادی؛ سایر حالات → نامشخص. اطمینان از تاریخ صف‌ها و شرط‌های هم‌زمان ضروری است.
+## Historical formulas and estimates
 
-## مرز نوشتن
+```text
+BuyValue       = buy_I_Volume * LastPrice
+SellValue      = sell_I_Volume * LastPrice
+BuyPerCapita   = IF(BuyerCount > 0, BuyValue / BuyerCount, 0)
+SellPerCapita  = IF(SellerCount > 0, SellValue / SellerCount, 0)
+BuyerPower     = IF(SellPerCapita > 0, BuyPerCapita / SellPerCapita, 0)
+NetRealMoneyFlow = BuyValue - SellValue
+LastChangePct  = (LastPrice / PreviousPrice) - 1, if PreviousPrice > 0
+```
 
-- `Symbol`، `InsCode`، `ISIN` و ستون‌های فرمولی کاربر را افزونه بازنویسی نکند؛ `FullName` و ستون‌های داده‌محور فقط با داده معتبر به‌روز شوند.
-- وضعیت نامعلوم یا API ناقص **معادل صفر** نیست؛ داده قبلی باید حفظ و به‌عنوان قدیمی/نامعتبر علامت‌گذاری شود تا کاربر آن را با داده تازه اشتباه نگیرد.
-- درج ستون یا تغییر ترتیب ستون‌ها با نام ستون کار کند، نه شماره ثابت؛ مهاجرت اسکیمای فایل کاربران فقط پس از تأیید.
-- ردیف‌های جدید یا تعداد نمادها نباید به ۳۷ ردیف نمونه یا فهرست ثابت نمادها محدود شود.
+`BuyValue` and `SellValue` estimate IRR notional using aggregate volume multiplied by a single last price; they are **not** exact transaction-by-transaction execution amounts. Never present them as exact executed cashflows. Preserve IRR/IRT distinctions.
 
-## منابع مشاهده‌شده در نمونه
+## Trading-state evidence
 
-- `ClosingPrice/GetMarketWatch` (داده گروهی)، `ClientType/GetClientTypeAll` (حقیقی/حقوقی).
-- `ClosingPrice/GetClosingPriceInfo/{InsCode}` (اطلاعات اختصاصی، تاریخ/ساعت و `instrumentState`).
-- `MarketData/GetStaticThreshold/{InsCode}/{TradeDate}` (محدوده مجاز برای تفسیر صف).
-- در نمونه قدیمی، `pdv`=آخرین قیمت، `pcl`=پایانی، `qtc`=ارزش معاملات، `pe`=P/E، `py`=قیمت مبنا/قبلی استفاده شده است. این نگاشت‌ها در شروع توسعه C# باید با پاسخ واقعی و داده مرجع دوباره آزموده شوند.
+Legacy tests observed `instrumentState.cEtaval` values:
+
+| Raw code (trimmed) | Source title (English translation) | Normalized state |
+|---|---|---|
+| `A` | Permitted | `ACTIVE` |
+| `IS` | Prohibited / Halted | `HALTED` |
+| Other or missing | Not verified | `UNKNOWN` until verified |
+
+The test instruments SHPNA (`7745894403636165`) and FGOSTAR (`8725363201030474`) were absent from a bulk MarketWatch response but had valid details and `IS` status in the individual API. Missing in bulk data **does not establish invalid ID or halted state**.
+
+A user-visible formula column may present `HALTED` as halted, otherwise require `ACTIVE` before using current queue volumes to call buy-queue, sell-queue, or normal. Unknown or failed status must not be silently labeled normal. Queue data must have adequate freshness before being presented as current.
+
+## Write safety and migration
+
+- Treat `Symbol`, `InsCode`, `ISIN`, and user formula columns as **user-owned**. Never clear or overwrite them during refresh.
+- Update by named table columns, not fixed numeric offsets. Reject or report unexpected schema without destructive writes.
+- Preserve old valid values on API failure and clearly mark their freshness/quality. A missing record is not valid evidence of numeric zero.
+- Do not hard-code 37 symbols, ticker order, or the original prototype layout into business logic.
+- Obtain PO approval for schema changes; provide migration/rollback strategy and automated tests.
+
+## Source mappings observed previously (require revalidation)
+
+- Bulk: `ClosingPrice/GetMarketWatch`; retail participants: `ClientType/GetClientTypeAll`.
+- Individual: `ClosingPrice/GetClosingPriceInfo/{InsCode}` for trading date/time and `instrumentState`.
+- Limits: `MarketData/GetStaticThreshold/{InsCode}/{TradeDate}` for order-book queue matching.
+- Historic interpretation: `pdv` last price, `pcl` close price, `qtc` traded value, `pe` P/E, `py` previous reference price. Revalidate against live official data and current endpoint shapes before treating mappings as stable.

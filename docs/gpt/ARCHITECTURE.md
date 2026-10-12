@@ -1,24 +1,28 @@
-# Architecture — Agreed Direction and Proposed Boundaries
+# Architecture — Approved Direction and Proposed Boundaries
 
-> **وضعیت:** جهت‌گیری معماری C# + Excel-DNA تأیید شده؛ ساختار پوشه‌ها و مرزهای فنی زیر **پیشنهاد اولیه** است و هنوز به معنی ایجاد پروژه‌ها یا Build موفق نیست.
+> **Status:** The C#/.NET + Excel-DNA direction is approved. The detailed project layout, interfaces, dependencies, supported platforms and deployment format remain **proposals**, not implemented facts.
 
-## نمای کلی
+## Intended separation of concerns
 
-Excel Workbook (جدول/فرمول/داشبورد)
-↕ Excel object model و افزونه
-Excel-DNA XLL (C#, ribbon / orchestration)
-↕ interfaceهای داخلی
-Core (مدل، اعتبارسنجی، قواعد محاسبه)
-↕
-TSETMC Adapter (HTTP، deserialize، تبدیل داده)
-↕
-TSETMC API
+```text
+Excel Workbook (user data, formulas, tables, dashboards)
+                  ↕
+Excel-DNA XLL / Ribbon / Excel interop adapter (C#)
+                  ↕
+Application orchestration (refresh workflow, results, diagnostics)
+                  ↕
+Domain/core (typed instrument IDs, quotes, states, validation, calculations)
+                  ↕
+TSETMC adapter (HTTP, parsing, DTO translation, quality metadata)
+                  ↕
+TSETMC endpoints
+```
 
-هسته باید مستقل از Excel قابل تست باشد. لایه Excel فقط خواندن/نوشتن امن Workbook و نمایش وضعیت را بر عهده بگیرد. منطق بازار داخل UI/Ribbon نباشد.
+The domain/core layer must be independently unit-testable without Excel, live HTTP or market hours. Excel interop should not contain pricing or financial business rules.
 
-## ساختار احتمالی آینده
+## Candidate repository layout — not yet created
 
-~~~text
+```text
 src/
   TseExcel.Core/
   TseExcel.Tsetmc/
@@ -26,27 +30,28 @@ src/
 tests/
   TseExcel.Core.Tests/
   TseExcel.Tsetmc.Tests/
-workbook/           # فقط قالب نمونه پاک‌سازی‌شده، پس از تأیید
-docs/gpt/           # کانتکس ChatGPT
-~~~
+workbook/             # Only approved sanitized templates
 
-پوشه‌های بالا تا وقتی در `main` ایجاد نشده‌اند، «موجود» تلقی نمی‌شوند.
+docs/gpt/             # ChatGPT context and working contracts
+```
 
-## اصول طراحی
+Do **not** assume these directories or any `.csproj` already exist. Codex/Astra should inspect the actual current repository before implementing.
 
-1. Fetch / Parse / Validate / Reconcile / Commit-to-Workbook مراحل جدا باشند؛ تا حد امکان پیش از نوشتن، داده‌ها و تطبیق شناسه ارزیابی شوند.
-2. `InsCode` شناسه متنی است، نه عدد Excel؛ از تبدیل آن به double و از دست‌رفتن رقم‌های انتهایی جلوگیری شود.
-3. برای API و Excel از مدل خطای صریح استفاده شود: رکورد ناموجود، نماد متوقف، داده ناقص، پاسخ خراب، داده قدیمی و خطای شبکه یکسان نیستند.
-4. HTTP I/O نباید رابط Excel را بی‌دلیل مسدود کند؛ خواندن/نوشتن Excel object model باید به محدودیت‌های Thread/COM و Thread اصلی Excel احترام بگذارد. جزئیات پیاده‌سازی هنوز انتخاب نشده‌اند.
-5. فرمول‌های کاربر حفظ شوند؛ تغییر اسکیمای Workbook باید جداگانه و با مهاجرت قابل بازیابی انجام شود.
-6. داده قابل‌ردیابی باشد: زمان دریافت، تاریخ معاملاتی و کیفیت/وضعیت هر منبع تا حد امکان ثبت یا نمایش داده شود.
-7. نسخه اول بدون VBA، بدون سرور الزامی، بدون Auto-Updater، بدون لایسنس و بدون پایتون باشد؛ افزودن بعدی با تصویب نیازها امکان‌پذیر است.
+## Mandatory design properties
 
-## تصمیم‌های باز
+- **Type-safe, idiomatic C#; OOP and SOLID**, with dependency inversion and explicit business models. Use design patterns when justified, not automatically. See [ENGINEERING-STANDARDS](ENGINEERING-STANDARDS.md).
+- Separate Fetch → Parse → Validate → Reconcile → Write-to-Workbook. The workflow should know when data is insufficient or contradictory **before** mutating sheets.
+- Use exact text `InsCode` as identity; never convert through floating-point Excel numbers.
+- Strongly distinguish valid `0` from missing/unknown/failed/stale. Keep provenance and timestamps where available.
+- Prevent UI freezes via appropriate async/network design, while honoring Excel/COM thread affinity for spreadsheet access.
+- Preserve formulas, manual cells and user-specific workbook contents. Schema migrations need PO approval and recoverability.
+- Unit tests for every change; contract/integration tests at external boundaries; local Excel acceptance checks by the PO.
+- All engineering documents, source comments and docstrings must be in English.
 
-- Target framework / .NET و نسخه Excel-DNA.
-- روش نصب XLL، معماری Office پشتیبانی‌شده، Trust Center و امضای کد.
-- انتخاب HTTP client، serialization و caching پس از بررسی شرایط API.
-- قرارداد دقیق نسخه‌های Workbook و آستانه‌های اعتبارسنجی.
+## Open architectural choices
 
-برای هیچ‌کدام مقدار یا ابزار جزئی قطعی بدون شواهد/تصویب تعیین نکن.
+Framework and Excel-DNA versions; Office bitness/minimum version; packaging and trust model; HTTP strategy and caching; workbook-version compatibility; refresh UI and error-reporting design. Present options and trade-offs to the PO rather than silently selecting them.
+
+## Delivery responsibility
+
+ChatGPT proposes architecture and reads source **read-only**. Codex/Astra implements and tests, **without committing**. The PO validates locally and personally commits source. ChatGPT may commit **approved documentation only**.

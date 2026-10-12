@@ -1,35 +1,32 @@
-# GPT Context Index — TSE Excel
+# ChatGPT Context Index — Lazy Loading
 
-این پوشه مرجع مستندات مربوط به توسعه پروژه در ChatGPT است. **این فایل نقشه راه بارگذاری تنبل است، نه دستور خواندن همه فایل‌ها.**
+The source of truth is `shelterless/tse-excel-portfo`, branch `main`. Copied ChatGPT Project Sources may be stale.
 
-## مرجع و تقدم اطلاعات
+## Mandatory start of EVERY conversation
 
-1. گفته صریح و جدید کاربر در گفت‌وگوی جاری؛
-2. وضعیت واقعی و فایل‌های مرتبط از `main` ریپوی `shelterless/tse-excel-portfo`؛
-3. شواهد اجرا و تست‌های ارائه‌شده؛
-4. نسخه‌های کپی‌شده در ChatGPT Project Sources؛
-5. گفت‌وگوهای قدیمی و دانش عمومی.
+1. Read **[OPERATING-CONTRACT.md](OPERATING-CONTRACT.md)** from current `main`. This is mandatory, **not** subject to lazy loading.
+2. Read this index.
+3. Read **only** other documents needed for the task. Never bulk-load context without a reason.
 
-قوانین قرارداد، تصمیم‌های مصوب و وضعیت اجرایی را از `main` بررسی کن؛ هر تناقض مؤثر میان این منابع را توضیح بده و **قبل از انتخاب یکی برای تغییرات حساس، سؤال بپرس**. فرض نکن متن Project Sources خودش با Git همگام می‌شود. اگر اتصال GitHub فراهم نبود، محدودیت را بگو و فایل/لینک یا دسترسی لازم را درخواست کن؛ ادعای خواندن `main` نکن.
+If live GitHub access is unavailable, say so instead of claiming access. Resolve material contradictions with the PO before making a decision.
 
-## بارگذاری بر اساس کار
+## Task-based loading
 
-| نوع درخواست | فقط این فایل‌ها را بخوان |
+| Topic | Load only these additional documents |
 |---|---|
-| معرفی، هدف و مرزبندی محصول | [PROJECT-CONTEXT.md](PROJECT-CONTEXT.md) |
-| طراحی ساختار یا انتخاب فناوری | [PROJECT-CONTEXT.md](PROJECT-CONTEXT.md) و [ARCHITECTURE.md](ARCHITECTURE.md) و در صورت تصمیم جدید [DECISIONS.md](DECISIONS.md) |
-| Excel، ستون‌ها، فرمول‌ها و نگاشت فیلد | [WORKBOOK-CONTRACT.md](WORKBOOK-CONTRACT.md) |
-| TSETMC، وضعیت نماد و خطا/تازگی داده | [DATA-RELIABILITY.md](DATA-RELIABILITY.md) و بخش مرتبط از [WORKBOOK-CONTRACT.md](WORKBOOK-CONTRACT.md) |
-| پیاده‌سازی، تست، Build و تحویل | [DEVELOPMENT-WORKFLOW.md](DEVELOPMENT-WORKFLOW.md)؛ معماری را فقط در صورت لزوم |
-| تغییر در کانتکس، ثبت تصمیم یا Git | [GOVERNANCE.md](GOVERNANCE.md) و فایل هدف؛ برای تصمیم معماری [DECISIONS.md](DECISIONS.md) |
-| تاریخچه تصمیم‌های معماری | [DECISIONS.md](DECISIONS.md)؛ در صورت نیاز [CHANGELOG.md](CHANGELOG.md) |
+| Product goals and MVP | [PROJECT-CONTEXT.md](PROJECT-CONTEXT.md) |
+| Architectural decisions | [PROJECT-CONTEXT.md](PROJECT-CONTEXT.md), [ARCHITECTURE.md](ARCHITECTURE.md), relevant [DECISIONS.md](DECISIONS.md) |
+| **Any coding task or code review** | **[ENGINEERING-STANDARDS.md](ENGINEERING-STANDARDS.md)** plus relevant contracts |
+| **Codex/Astra implementation prompt** | **[ENGINEERING-STANDARDS.md](ENGINEERING-STANDARDS.md)**, **[CODEX-HANDOFF.md](CODEX-HANDOFF.md)**, [DEVELOPMENT-WORKFLOW.md](DEVELOPMENT-WORKFLOW.md) plus relevant technical contracts |
+| Workbook fields, formulas, migration | [WORKBOOK-CONTRACT.md](WORKBOOK-CONTRACT.md) |
+| TSETMC, status, data quality, errors | [DATA-RELIABILITY.md](DATA-RELIABILITY.md), relevant workbook contract |
+| Documentation, Git, access and context sync | [GOVERNANCE.md](GOVERNANCE.md), target document |
+| Decision records | [DECISIONS.md](DECISIONS.md); [CHANGELOG.md](CHANGELOG.md) when needed |
 
-`PROJECT-INSTRUCTIONS.md` فایل Bootstrap کپی‌شدنی در تنظیمات ChatGPT Project است؛ در هر درخواست نیازی به بازخوانی دوباره آن نیست اگر از قبل در Project Instructions موجود باشد.
+## Evidence precedence
 
-## قواعد مستندسازی
+Explicit newer PO statements > verified current `main` > observed build/test evidence > copied Project Sources > historical discussion. Explain unresolved contradictions; do not fill unknowns with assumptions.
 
-- واقعیت تأییدشده، تصمیم ثبت‌شده، پیشنهاد، فرض کاری و موضوع باز را از هم جدا کن.
-- کد یا فایل را فقط وقتی «پیاده‌سازی/تست/منتشر شده» بنام که شواهد واقعی وجود داشته باشد.
-- به‌روزرسانی اسناد کانتکس فقط پس از تأیید کاربر؛ تغییرات را در کمترین فایل لازم انجام بده.
-- وقتی فایل‌های کانتکس در Git عوض شدند، نام فایل‌های موردنیاز برای جایگزینی در Project Sources را گزارش کن.
-- `PROJECT-INSTRUCTIONS.md` را حداقلی نگه دار. فقط با تغییر همان فایل، همگام‌سازی دستی ChatGPT Project Instructions لازم است.
+All documents and work packages are **English** unless explicitly directed otherwise; PO/ChatGPT discussion is **Persian**. ChatGPT has **read-only source access**, may commit **PO-approved documentation only**, and must not touch source. Codex/Astra writes and tests code **without committing**; PO alone accepts and commits source after local testing.
+
+Report actual documentation commits and which Project Sources must be replaced. Only changes to [PROJECT-INSTRUCTIONS.md](PROJECT-INSTRUCTIONS.md) require updating the ChatGPT Project Instructions field.

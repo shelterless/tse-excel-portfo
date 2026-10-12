@@ -1,10 +1,20 @@
 # Context Documentation Changelog
 
-## 2026-10-12 — Initial bootstrap
+> This file describes **approved documentation changes**, not source-code releases.
 
-- ایجاد مدل مستندسازی اختصاصی ChatGPT در `docs/gpt/` و README ریشه.
-- ثبت چارچوب تأییدشده C#/.NET + Excel-DNA/XLL و خروج VBA از محصول جدید.
-- ثبت قرارداد نمونه Workbook، مشاهدات TSETMC و قواعد حفظ داده هنگام خطا/توقف.
-- تفکیک MVP از Auto-Updater، لایسنس، Backend و خدمات آتی.
-- ایجاد قواعد Lazy Load، تقدم نسخه فعلی GitHub، تأیید پیش از تغییر اسناد، و همگام‌سازی دستی ChatGPT Project Sources.
-- در این تاریخ **هیچ کد C# یا فایل Excel در این ریپو پیاده‌سازی/تأیید نشده است**.
+## 2026-10-12 — PO-approved documentation revision
+
+- Rewrote the root README and ChatGPT context documentation in **English**; PO/ChatGPT conversation remains in Persian.
+- Added a mandatory **Operating Contract**, read at the start of every new conversation, plus lazy-loading instructions for task-specific docs.
+- Formalized **Product Owner / ChatGPT advisor and documentation steward / Codex-Astra developer** role separation.
+- Prohibited ChatGPT source-code modifications and commits; prohibited all Codex/Astra Git commits and pushes. Reserved source acceptance, local tests and commits to the PO.
+- Made **PO approval of the finished documentation draft** mandatory before ChatGPT writes/commits documentation to `main`.
+- Established mandatory **OOP, SOLID, type safety, justified design patterns and unit tests for every code change**, with code comments/docstrings in English.
+- Defined the complete Codex/Astra implementation handoff format, including context links, scope, acceptance criteria, test obligations and no-commit instruction.
+- Preserved product boundaries: C#/.NET + Excel-DNA MVP, with Auto-Updater and commercial platform features deferred.
+
+**Approval status:** Approved by the PO on 2026-10-12 for direct documentation commit to `main`.
+
+## 2026-10-12 — Earlier bootstrap
+
+- Initial repository README and `docs/gpt/` context were created in GitHub. They were primarily Persian and did not yet fully enforce the later-confirmed PO/ChatGPT/Codex role boundaries.

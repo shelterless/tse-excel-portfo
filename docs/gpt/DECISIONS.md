@@ -1,37 +1,43 @@
-# Decisions & Open Questions
+# Decisions and Open Questions
 
-این سند مصوبات واقعی را از فرض و پیشنهاد جدا می‌کند. تغییر تصمیم‌های مصوب فقط با توضیح اثر و تأیید صریح کاربر انجام شود.
+This file separates **explicitly approved decisions** from design proposals, observations and unresolved choices. Only the Product Owner (PO) approves or changes binding decisions.
 
-## مصوبات
+## Confirmed decisions
 
-| ID | تصمیم | وضعیت |
+| ID | Decision | Status |
 |---|---|---|
-| D-001 | Repository پروژه `shelterless/tse-excel-portfo` و branch مرجع `main` | تأییدشده |
-| D-002 | هسته و افزونه با C#/.NET؛ **بدون VBA/VB** در محصول جدید | تأییدشده |
-| D-003 | استفاده از Excel-DNA و افزونه XLL برای Excel به‌عنوان مسیر معماری | تأییدشده |
-| D-004 | منطق و اتصال API خارج از Workbook، Excel برای نمایش/تعامل/فرمول | تأییدشده |
-| D-005 | نسخه اول Build محلی؛ Auto-Updater در فازهای بعدی | تأییدشده |
-| D-006 | مدیریت اسناد کانتکس در `docs/gpt` با Bootstrap حداقلی و Lazy Loading | تأییدشده |
-| D-007 | به‌روزرسانی اسناد کانتکس Git پس از تأیید کاربر؛ اعلام کپی Project Instructions فقط اگر Bootstrap تغییر کند | تأییدشده |
-| D-008 | سرویس داده/اشتراک/لایسنس/Backend و تحلیل تجاری فعلاً خارج از MVP | تأییدشده به‌عنوان تعویق |
+| D-001 | Canonical repository: `shelterless/tse-excel-portfo`, branch `main` | Approved |
+| D-002 | New product implementation uses **C#/.NET; no VBA/VB** | Approved |
+| D-003 | Excel-DNA/XLL is the initial add-in integration direction | Approved direction |
+| D-004 | Workbook manages user data, formulas and display; compiled C# handles integration/logic | Approved direction |
+| D-005 | MVP uses local build/install; **Auto-Updater deferred** | Approved |
+| D-006 | ChatGPT Project uses minimal bootstrap, `docs/gpt/`, and task-based lazy loading | Approved |
+| D-007 | Conversation with ChatGPT is **Persian**; **all documentation, technical context, source comments and docstrings are English**, except explicit PO exceptions | Approved |
+| D-008 | Implementation quality requires **OOP, SOLID, type safety, justified design patterns and automated unit tests for every code change**, including small changes | Approved |
+| D-009 | User acts as **Product Owner**, approves requirements/architecture, runs local acceptance tests and **alone commits/pushes source** | Approved |
+| D-010 | ChatGPT acts as advisor, analyst and **documentation steward**; source **read-only**, prepares complete Codex/Astra prompts | Approved |
+| D-011 | Codex/Astra is the developer; it writes code/tests but **never commits/pushes/tags/merges PRs/publishes releases** | Approved |
+| D-012 | ChatGPT can **commit documentation only after PO approval of its finished draft**, directly to `main`; it never modifies source/tests/project/build/config files | Approved |
+| D-013 | The [Operating Contract](OPERATING-CONTRACT.md) is a **mandatory first read at the start of every conversation**; load other docs lazily | Approved |
+| D-014 | ChatGPT announces Project Instructions re-paste **only when `PROJECT-INSTRUCTIONS.md` changes**; changed context Source files must be synchronized separately | Approved |
+| D-015 | Commercial backend, licensing/subscription infrastructure and Python runtime are deferred beyond MVP | Approved as deferral |
 
-## پیشنهادها / موارد هنوز تأییدنشده
+## Unresolved decisions (do not guess)
 
-| موضوع | وضعیت |
+| Topic | Status |
 |---|---|
-| حداقل نسخه Windows و Excel، x64/x86 و نسخه دقیق .NET / Excel-DNA | باز، نیازمند تصمیم |
-| کلاس‌ها، solution، نام پروژه‌ها، ساختار فیزیکی source | پیشنهاد معماری، نه پیاده‌سازی |
-| طراحی Ribbon، UX پیشرفت/خطا و سیاست زمان‌بندی Refresh | باز |
-| Schema نهایی Workbook و migration از نمونه VBA | باز؛ نیاز به Workbook واقعی |
-| سیاست کامل Refresh به‌ویژه پیش از بازار و ClientType ناقص | اصل fail-safe پذیرفته؛ جزئیات اجرایی باز |
-| دسترسی مجاز/مقیاس‌پذیر به داده TSETMC و شرایط استفاده تجاری | باز؛ نیازمند بررسی |
-| CI/CD و روش توزیع اولیه افزونه | باز، پس از MVP پایه |
-| سرویس Python | برای MVP انتخاب نشده؛ فعلاً نیازی نیست |
+| Minimum supported Excel and Windows versions, x86/x64 and exact .NET/Excel-DNA versions | Open |
+| Actual `.sln`/project structure, NuGet versions, Ribbon UX and local add-in installation | Proposed only |
+| Workbook schema versioning and migration from the VBA prototype | Requires current workbook inspection and PO approval |
+| Market-data freshness, ClientType publication timing, bulk coverage thresholds | Open; needs evidence |
+| TSETMC terms of use, scaling/rate limits and rights for commercial redistribution | Open |
+| Public versus private repository for proprietary source code | Open; currently observed as public |
+| Source build automation, signing and release distribution | Future decisions |
 
-## شواهد فنیِ موجود (نه مصوبه API)
+## Technical evidence — not binding API contracts
 
-- در تست قبلی `instrumentState.cEtaval = A` با عنوان «مجاز» و `IS` با عنوان «ممنوع-متوقف» دیده شد.
-- بعضی نمادهای متوقف در پاسخ گروهی نبودند ولی API اختصاصی اطلاعات داشت.
-- پاسخ ClientType در یک نوبت پوشش کافی و در نوبت دیگری بسیار اندک داشت.
+- Earlier tests observed `instrumentState.cEtaval` values `A` (permitted) and `IS` (halted).
+- SHPNA and FGOSTAR were missing in a bulk API snapshot but returned valid individual endpoint data and `IS` state.
+- ClientType snapshot coverage varied significantly across observed tests.
 
-برای جزئیات به [WORKBOOK-CONTRACT.md](WORKBOOK-CONTRACT.md) و [DATA-RELIABILITY.md](DATA-RELIABILITY.md) رجوع کن.
+For technical interpretation, consult [WORKBOOK-CONTRACT](WORKBOOK-CONTRACT.md) and [DATA-RELIABILITY](DATA-RELIABILITY.md). For role authority, consult [OPERATING-CONTRACT](OPERATING-CONTRACT.md).

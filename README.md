@@ -1,60 +1,44 @@
 # TSE Excel Portfolio
 
-**TSE Excel Portfolio** (`tse-excel-portfo`) — پروژه ساخت افزونه مستقل Excel برای دریافت، اعتبارسنجی و نمایش داده‌های بازار سرمایه ایران، با تمرکز اولیه بر اطلاعات نمادها، وضعیت معاملاتی، صف خرید/فروش و رفتار معاملاتی حقیقی/حقوقی.
+A planned **C#/.NET + Excel-DNA** add-in for Microsoft Excel for retrieving, validating and presenting Iranian capital-market data. The initial focus is securities, trading status, order queues, and retail/institutional activity.
 
-> **وضعیت فعلی:** مخزن در مرحله **تعریف محصول و مستندسازی معماری** است. هنوز Solution، افزونه C#، فایل XLL، نصب‌کننده، تست خودکار یا فایل Workbook به‌عنوان خروجی این ریپو ساخته و تأیید نشده‌اند.
+> **Status:** Project definition and documentation. A working C# solution, XLL package, installer, or automated test suite is not yet confirmed. The former Excel/VBA workbook is a behavioral reference, not the planned implementation.
 
-## هدف
+## MVP direction
 
-انتقال منطق نمونه Excel/VBA قبلی به یک معماری قابل تست و قابل توسعه **C#/.NET + Excel-DNA**؛ به شکلی که Excel رابط کاربری و محل نمایش جدول‌ها/فرمول‌ها باشد و کد مربوط به دریافت و پردازش TSETMC در کتابخانه‌های کامپایل‌شده اجرا شود. برنامه باید با نمادهای متوقف، داده ناقص و خطای API به‌صورت ایمن برخورد کند و داده‌ها و فرمول‌های کاربر را حفظ کند.
+- Windows desktop Excel is the initial target; exact Office and .NET compatibility requirements remain open.
+- Excel owns the workbook, user-entered data, formulas and dashboards. Compiled C# libraries and an Excel-DNA XLL handle refresh and processing.
+- Preserve exact `InsCode` identifiers, differentiate halted symbols from missing API data, detect stale/partial responses and avoid destructive updates.
+- Initial releases are built and installed locally. No new VBA/VB, Auto-Updater, hosted backend, license service, commercial subscription platform or Python runtime in MVP.
 
-## دامنه MVP
+## Roles and delivery
 
-- افزونه C# مبتنی بر Excel-DNA/XLL، با Build و نصب **محلی**؛
-- اتصال به TSETMC برای دریافت داده نمادها؛
-- Refresh جدول نمادهای Excel با تطبیق امن `InsCode` و بدون تخریب فرمول‌های دستی؛
-- تشخیص و گزارش وضعیت نماد، تازگی/ناقص‌بودن داده و خطا؛
-- رابط مناسب Excel برای اجرای Refresh و مشاهده نتیجه.
+The **user is the Product Owner (PO)**, owns all approvals, runs local acceptance tests and is the **only person committing/pushing source code**. **ChatGPT** is the advisor, requirements analyst and documentation steward; it reads source **read-only**, prepares complete Codex/Astra work packages, and may commit **documentation only after PO approval of the finished draft**. **Codex/Astra** implements/tests source but never commits or pushes.
 
-**خارج از MVP:** VBA/VB در محصول جدید، Auto-Updater، سرویس اشتراک/لایسنس، Backend اختصاصی، تجاری‌سازی و موتور Python. افزودن هرکدام در آینده مستلزم تصمیم جداگانه است.
+The PO and ChatGPT converse **in Persian**. **All documentation, source comments, docstrings and engineering briefs are in English** unless the PO explicitly requests a different language for an artifact.
 
-نسخه‌های دقیق .NET، Excel-DNA، سازگاری Office/Windows، روش نصب و قرارداد نهایی Workbook هنوز تأیید نشده‌اند؛ مستندات فنی زیر تصمیم‌های باز را صریحاً مشخص می‌کنند.
+## ChatGPT context documents
 
-## مستندات
-
-مرجع مستندات کانتکس ChatGPT در [docs/gpt](docs/gpt/README.md) است:
-
-| سند | کاربرد |
+| Document | Purpose |
 |---|---|
-| [Project Instructions](docs/gpt/PROJECT-INSTRUCTIONS.md) | Bootstrap بسیار کوتاه برای ChatGPT Project Instructions |
-| [Context Index](docs/gpt/README.md) | راهنمای Lazy Loading و انتخاب فایل فقط بر اساس کار |
-| [Project Context](docs/gpt/PROJECT-CONTEXT.md) | هدف، محدوده و موارد خارج از MVP |
-| [Architecture](docs/gpt/ARCHITECTURE.md) | مرز لایه‌ها و پیشنهاد معماری |
-| [Workbook Contract](docs/gpt/WORKBOOK-CONTRACT.md) | ساختار مشاهده‌شده Excel نمونه، فیلدها و فرمول‌ها |
-| [Data Reliability](docs/gpt/DATA-RELIABILITY.md) | TSETMC، وضعیت توقف، تازگی و سیاست برخورد با خطا |
-| [Development Workflow](docs/gpt/DEVELOPMENT-WORKFLOW.md) | ساخت، تست، تحویل و تجربه توسعه |
-| [Governance](docs/gpt/GOVERNANCE.md) | تأیید تغییرات، GitHub و همگام‌سازی کانتکس |
-| [Decisions](docs/gpt/DECISIONS.md) | مصوبات و سؤال‌های باز |
-| [Changelog](docs/gpt/CHANGELOG.md) | تاریخچه تغییرات کانتکس |
+| [PROJECT-INSTRUCTIONS](docs/gpt/PROJECT-INSTRUCTIONS.md) | Minimal ChatGPT Project bootstrap |
+| [OPERATING-CONTRACT](docs/gpt/OPERATING-CONTRACT.md) | **Mandatory first read for every conversation** |
+| [Context Index](docs/gpt/README.md) | Task-based lazy-loading map |
+| [PROJECT-CONTEXT](docs/gpt/PROJECT-CONTEXT.md) | Product goal, MVP, excluded phases |
+| [ENGINEERING-STANDARDS](docs/gpt/ENGINEERING-STANDARDS.md) | OOP, SOLID, type safety, mandatory unit tests |
+| [CODEX-HANDOFF](docs/gpt/CODEX-HANDOFF.md) | Complete Codex/Astra implementation prompt contract |
+| [DEVELOPMENT-WORKFLOW](docs/gpt/DEVELOPMENT-WORKFLOW.md) | PO-led implementation and local acceptance lifecycle |
+| [ARCHITECTURE](docs/gpt/ARCHITECTURE.md) | Approved direction and proposed boundaries |
+| [WORKBOOK-CONTRACT](docs/gpt/WORKBOOK-CONTRACT.md) | Observed legacy workbook schema and formulas |
+| [DATA-RELIABILITY](docs/gpt/DATA-RELIABILITY.md) | TSETMC validity, status and failure policy |
+| [GOVERNANCE](docs/gpt/GOVERNANCE.md) | Documentation approval, access controls and sync |
+| [DECISIONS](docs/gpt/DECISIONS.md) | Approved decisions versus open questions |
+| [CHANGELOG](docs/gpt/CHANGELOG.md) | Context documentation changes |
 
-## راه‌اندازی ChatGPT Project
+## ChatGPT Project setup
 
-نام پیشنهادی: **Mohsen-Portfo-TSE-Excel**.
+Suggested project name: **Mohsen-Portfo-TSE-Excel**. Paste only [PROJECT-INSTRUCTIONS.md](docs/gpt/PROJECT-INSTRUCTIONS.md) into **Project Instructions**; add the remaining `docs/gpt/*.md` documents to **Project Sources**. At the beginning of every new conversation, read the current [OPERATING-CONTRACT.md](docs/gpt/OPERATING-CONTRACT.md), then the index; load other docs only as needed. Project Sources are **not automatically synchronized** with GitHub: replace changed copies after an approved documentation commit. Re-paste Project Instructions **only if** its bootstrap file changed.
 
-1. یک ChatGPT Project جدید بساز.
-2. فقط **محتوای** [docs/gpt/PROJECT-INSTRUCTIONS.md](docs/gpt/PROJECT-INSTRUCTIONS.md) را در بخش **Project Instructions** کپی کن.
-3. فایل‌های دیگر `docs/gpt/` را به **Project Sources** اضافه کن (به‌ویژه `README.md` همان پوشه به‌عنوان راهنمای بارگذاری تنبل).
-4. در درخواست‌های جدید، از ChatGPT بخواه نسخه فعلی `main` را از GitHub بررسی کند و **فقط سند مرتبط با همان کار** را بخواند. Project Sources نسخه‌های کپی‌شده‌اند و به‌صورت خودکار با GitHub Sync نمی‌شوند.
-5. پس از تأیید تو، هر تغییر کانتکس در GitHub ثبت می‌شود؛ فایل‌های تغییریافته را در Sources جایگزین کن. **تنها اگر Project Instructions عوض شد**، متن Bootstrap را هم در تنظیمات پروژه جایگزین کن.
+## Safety
 
-## توسعه
-
-برای اولین فاز توسعه، ابتدا نسخه واقعی Workbook و محیط هدف Excel/Windows/.NET تأیید می‌شوند؛ سپس Solution و افزونه به‌صورت عمودی (دریافت داده، پردازش، Refresh و تست) پیاده‌سازی خواهد شد. ساختار احتمالی سورس در سند [Architecture](docs/gpt/ARCHITECTURE.md) آمده و تا ایجاد واقعی، صرفاً **پیشنهاد** است.
-
-## امنیت و حریم خصوصی
-
-**این مخزن در زمان تهیه مستندات Public است.** هیچ داده شخصی پرتفوی/کارگزاری، رمز، توکن، فایل مشتری یا الگوریتم محرمانه نباید در آن commit شود. فایل‌های نمونه باید ساختگی یا پاک‌سازی‌شده باشند. اگر قرار است منطق تجاری اختصاصی نگهداری شود، ابتدا سیاست دسترسی و خصوصی‌بودن مخزن را تعیین کن.
-
----
-
-**منبع حقیقت:** برنچ [`main`](https://github.com/shelterless/tse-excel-portfo/tree/main)؛ به‌روزرسانی اسناد GPT پس از تأیید کاربر، مطابق [Governance](docs/gpt/GOVERNANCE.md).
+This repository was **public** when these documents were prepared. Do not publish personal holdings, brokerage exports, secrets, customer data or confidential commercial algorithms. The canonical branch is [`main`](https://github.com/shelterless/tse-excel-portfo/tree/main). Source commits belong exclusively to the PO after local testing; ChatGPT documentation commits require prior PO approval.
