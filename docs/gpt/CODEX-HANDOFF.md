@@ -1,6 +1,6 @@
-# Codex / Astra Work-Package Contract
+# Codex Work-Package Contract
 
-ChatGPT prepares a **complete implementation prompt** only after discussing the change with the Product Owner and obtaining approval for the task scope. Codex/Astra is the developer; the PO is the final acceptance authority.
+ChatGPT prepares a **complete implementation prompt** only after discussing the change with the Product Owner and obtaining approval for the task scope. Codex is the development tool, with no prescribed underlying model; the PO is the final acceptance authority.
 
 ## Required sections of each implementation prompt
 
@@ -13,7 +13,7 @@ ChatGPT prepares a **complete implementation prompt** only after discussing the 
 7. **Tests and verification:** **unit tests for every change**, adapter/contract/integration tests as applicable, reproducible build/test commands and sanitization of fixtures.
 8. **Acceptance criteria:** objective conditions, expected output, failure behavior, no-loss invariants, and the PO's local Excel acceptance checklist.
 9. **Delivery report:** changed files, architecture choices, exact commands and observed results, unrun tests/reasons, risks and pending PO decisions.
-10. **Hard Git restrictions:** **Codex/Astra MUST NOT commit, push, tag, create/merge PRs or publish releases.** Leave all source changes uncommitted for the PO's local testing and personal commit. Do not edit `docs/gpt` governance without the PO's separate documentation approval process.
+10. **Hard Git restrictions:** **Codex MUST NOT commit, push, tag, create/merge PRs or publish releases.** Leave all source changes uncommitted for the PO's local testing and personal commit. Do not edit `docs/gpt` governance without the PO's separate documentation approval process.
 
 ## Mandatory escalation
 
@@ -37,4 +37,4 @@ Git: DO NOT COMMIT, PUSH, TAG, CREATE/MERGE PRs, OR RELEASE.
 Leave changes uncommitted; PO alone tests/accepts/commits source.
 ```
 
-Prefer an end-to-end implementable work package to fragmented micro-experiments. Technical tests should be automated by Codex/Astra, not repeatedly delegated to the PO unless local Excel is required.
+Prefer an end-to-end implementable work package to fragmented micro-experiments. Technical tests should be automated by Codex, not repeatedly delegated to the PO unless local Excel is required.

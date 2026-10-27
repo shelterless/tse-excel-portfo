@@ -2,6 +2,15 @@
 
 > This file describes **approved documentation changes**, not source-code releases.
 
+## 2026-10-27 — PO-approved prototype scope and tool clarification
+
+- Recorded a deliberately minimal Excel-DNA pre-MVP prototype: Ribbon commands to create a workbook-adjacent JSON file and show its contents, without locking or market APIs.
+- Preserved the existing market-data MVP, and deferred advanced configuration editing, locking, workbook generation and commercial infrastructure.
+- Clarified that Codex is the implementation tool; the underlying model is not fixed by project documentation.
+- Clarified ChatGPT's responsibility to apply and commit PO-approved documentation changes directly to `main`, without requiring the PO to apply patches; source commits remain PO-only.
+- Recorded one-step-at-a-time local setup and the actual ChatGPT Project name, `Mohsen-TSE-Excel`.
+- Retained historical changelog entries unchanged.
+
 ## 2026-10-12 — PO-approved documentation revision
 
 - Rewrote the root README and ChatGPT context documentation in **English**; PO/ChatGPT conversation remains in Persian.

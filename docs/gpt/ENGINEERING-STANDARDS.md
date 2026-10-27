@@ -1,6 +1,6 @@
 # Engineering Standards — Mandatory for Every Code Change
 
-This document is normative for Codex/Astra implementation and ChatGPT review. Always read it with [OPERATING-CONTRACT.md](OPERATING-CONTRACT.md) when preparing **any** coding work package, including trivial fixes.
+This document is normative for Codex implementation and ChatGPT review. Always read it with [OPERATING-CONTRACT.md](OPERATING-CONTRACT.md) when preparing **any** coding work package, including trivial fixes.
 
 ## OOP, SOLID and code architecture
 
@@ -23,7 +23,7 @@ This document is normative for Codex/Astra implementation and ChatGPT review. Al
 
 ## Automated testing — non-negotiable
 
-- **Every code change, no matter how small, must include or update relevant automated unit tests.** If genuinely not unit-testable, Codex/Astra must justify the exception and include the nearest useful automated verification; this is not a blanket exemption.
+- **Every code change, no matter how small, must include or update relevant automated unit tests.** If genuinely not unit-testable, Codex must justify the exception and include the nearest useful automated verification; this is not a blanket exemption.
 - Unit tests must be deterministic, fast and isolated from Excel installation, live internet connectivity and current market hours.
 - Add integration/contract tests where changes cross HTTP/API, serialization, Excel interop, persistence or add-in registration boundaries. Mark environment-dependent Excel checks separately.
 - Cover both success and failure: empty/partial ClientType, halted but valid instruments, unknown codes, malformed JSON, timeouts, invalid/long IDs, date mismatch, currency/locale precision, stale order queues, safe rollback and formula preservation.
@@ -36,4 +36,4 @@ This document is normative for Codex/Astra implementation and ChatGPT review. Al
 - Write comments for non-obvious business invariants, public contracts and caveats; avoid redundant comment clutter.
 - Keep implementation scope focused and coherent; new dependencies and architecture changes need clear rationale and PO approval.
 - A deliverable report must identify changed files, design choices, verified test/build commands and results, tests not executed, unresolved risks and steps for PO local acceptance testing.
-- **Codex/Astra never commits; ChatGPT never modifies source; the PO alone commits source after local validation.**
+- **Codex never commits; ChatGPT never modifies source; the PO alone commits source after local validation.**

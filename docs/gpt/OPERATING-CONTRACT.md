@@ -14,10 +14,10 @@
 | Role | Responsibility | Hard limits |
 |---|---|---|
 | **Product Owner (PO) — the user** | Owns product goals, backlog, priorities, scope, decision-making, architectural approval, acceptance criteria and final acceptance. Performs local build, tests and Excel verification. **Only the PO commits/pushes source code** after local validation. Reviews and approves completed documentation drafts. | All source acceptance and source commits are PO decisions. |
-| **ChatGPT — advisor, analyst and documentation steward** | Consults with PO, clarifies requirements, identifies risks and trade-offs, prepares architecture proposals, acceptance criteria and complete Codex/Astra implementation prompts. Reads and reviews source **read-only**. Drafts and maintains documentation. | **Never edits, stages, commits, pushes or otherwise modifies source code, tests, `.csproj`, solution/build files, runtime configuration or other non-documentation assets.** Can commit **documentation only** on `main`, **after PO reviews and explicitly approves the finished draft**. |
-| **Codex/Astra — software developer** | Implements PO-approved C# changes, writes/updates automated tests, performs feasible technical verification and reports actual results. | **Never commits, pushes, tags, creates/merges pull requests or publishes releases.** Leaves source changes uncommitted. Does not independently change governance/context documentation. |
+| **ChatGPT — advisor, analyst and documentation steward** | Consults with PO, clarifies requirements, identifies risks and trade-offs, prepares architecture proposals, acceptance criteria and complete Codex implementation prompts. Reads and reviews source **read-only**. Drafts and maintains documentation. | **Never edits, stages, commits, pushes or otherwise modifies source code, tests, `.csproj`, solution/build files, runtime configuration or other non-documentation assets.** Can commit **documentation only** on `main`, **after PO reviews and explicitly approves the finished draft**. |
+| **Codex — software developer** | Implements PO-approved C# changes, writes/updates automated tests, performs feasible technical verification and reports actual results. | **Never commits, pushes, tags, creates/merges pull requests or publishes releases.** Leaves source changes uncommitted. Does not independently change governance/context documentation. |
 
-**Lifecycle:** PO discusses needs with ChatGPT → ChatGPT clarifies, designs and defines a coherent work package → PO approves scope → ChatGPT delivers a complete Codex/Astra prompt → Codex/Astra implements/tests **without commit** → PO runs local tests and Excel acceptance checks → PO approves and **personally commits/pushes source**.
+**Lifecycle:** PO discusses needs with ChatGPT → ChatGPT clarifies, designs and defines a coherent work package → PO approves scope → ChatGPT delivers a complete Codex prompt → Codex implements/tests **without commit** → PO runs local tests and Excel acceptance checks → PO approves and **personally commits/pushes source**.
 
 ## Mandatory engineering standards
 
@@ -29,7 +29,7 @@ Read [ENGINEERING-STANDARDS.md](ENGINEERING-STANDARDS.md) **before every coding 
 - Explicit nullability, error handling, cancellation and timeouts where appropriate; exact `InsCode` handling, money units, API freshness/coverage and preservation of user formulas and data.
 - Honest build/test reporting, no invented coverage or green checks.
 
-Use [CODEX-HANDOFF.md](CODEX-HANDOFF.md) to prepare every professional implementation prompt for Codex/Astra.
+Use [CODEX-HANDOFF.md](CODEX-HANDOFF.md) to prepare every professional implementation prompt for Codex.
 
 ## Source of truth, uncertainty, scope and safety
 
@@ -42,7 +42,7 @@ Use [CODEX-HANDOFF.md](CODEX-HANDOFF.md) to prepare every professional implement
 ## Documentation change gate and sync
 
 1. ChatGPT prepares **complete documentation drafts** and presents them to the PO **before any Git modification**. General discussion is **not** approval.
-2. Only after **explicit PO approval of the finished draft** may ChatGPT edit/commit **documentation** to `main`. Verify the written files by reading back and report the actual commit SHA(s).
+2. Only after **explicit PO approval of the finished draft**, ChatGPT must itself edit and commit **documentation only** directly to `main`, rather than handing patches to the PO. Verify the written files by reading back and report the actual commit SHA(s).
 3. **Source is read-only for ChatGPT even when Git write access exists.** Documentation access does not grant source modification rights.
 4. Identify each changed context document for replacement in ChatGPT Project Sources.
 5. **Only when `docs/gpt/PROJECT-INSTRUCTIONS.md` changes** tell the PO to paste the updated bootstrap into ChatGPT Project Instructions.

@@ -2,6 +2,8 @@
 
 > **Status:** The C#/.NET + Excel-DNA direction is approved. The detailed project layout, interfaces, dependencies, supported platforms and deployment format remain **proposals**, not implemented facts.
 
+The immediate pre-MVP proof of concept covers only Excel Ribbon interaction and workbook-adjacent JSON creation/read/display; it does not require implementing the proposed market-data layers below.
+
 ## Intended separation of concerns
 
 ```text
@@ -35,7 +37,7 @@ workbook/             # Only approved sanitized templates
 docs/gpt/             # ChatGPT context and working contracts
 ```
 
-Do **not** assume these directories or any `.csproj` already exist. Codex/Astra should inspect the actual current repository before implementing.
+Do **not** assume these directories or any `.csproj` already exist. Codex should inspect the actual current repository before implementing.
 
 ## Mandatory design properties
 
@@ -54,4 +56,4 @@ Framework and Excel-DNA versions; Office bitness/minimum version; packaging and 
 
 ## Delivery responsibility
 
-ChatGPT proposes architecture and reads source **read-only**. Codex/Astra implements and tests, **without committing**. The PO validates locally and personally commits source. ChatGPT may commit **approved documentation only**.
+ChatGPT proposes architecture and reads source **read-only**. Codex implements and tests, **without committing**. The PO validates locally and personally commits source. ChatGPT may commit **approved documentation only**.

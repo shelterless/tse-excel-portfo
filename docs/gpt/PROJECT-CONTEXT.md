@@ -4,7 +4,7 @@
 
 Build a maintainable Excel add-in to retrieve, validate, analyze and present Iranian securities-market data. The first use case comes from an Excel market-watch/portfolio workbook and includes prices, price limits, buy/sell queues, retail participant counts, estimated retail flow and trading-state diagnostics. The potential to expand to all listed symbols and commercial analytics is a **future possibility**, not an approved first-phase deliverable.
 
-The GitHub repository is `shelterless/tse-excel-portfo`; the proposed ChatGPT Project name is `Mohsen-Portfo-TSE-Excel`.
+The GitHub repository is `shelterless/tse-excel-portfo`; the current ChatGPT Project name is `Mohsen-TSE-Excel`.
 
 ## Background observations
 
@@ -19,7 +19,21 @@ The GitHub repository is `shelterless/tse-excel-portfo`; the proposed ChatGPT Pr
 - Excel remains the presentation, workbook, tables and formulas layer; typed C# modules handle domain rules and market-data integration.
 - Local-first building/testing/installation for MVP.
 - Strong OOP/SOLID/type safety/automated unit-test requirements are mandatory for **every implementation change**, per [ENGINEERING-STANDARDS](ENGINEERING-STANDARDS.md).
-- **PO** approves scope, performs local acceptance tests and commits source. **ChatGPT** consults, documents and writes Codex/Astra work packages; it reads source read-only and commits only PO-approved documentation. **Codex/Astra** implements/tests but never commits.
+- **PO** approves scope, performs local acceptance tests and commits source. **ChatGPT** consults, documents and writes Codex work packages; it reads source read-only and commits only PO-approved documentation. **Codex** implements/tests but never commits.
+
+## Immediate proof of concept — before the market-data MVP
+
+The first milestone is a deliberately minimal Excel-DNA Ribbon prototype for Windows desktop Excel, built locally with C#/.NET and VS Code without requiring Visual Studio. It precedes, but does not replace, the market-data MVP below.
+
+- A saved workbook has a corresponding business-configuration JSON file beside it, with the same basename (for example, `Analysis.xlsx` and `Analysis.json`). This is not the installed add-in's own configuration.
+- A Ribbon command can explicitly create a minimal JSON file when absent, without overwriting an existing file.
+- A separate test Ribbon command reads the corresponding JSON and displays its contents in a message dialog.
+- Unrelated workbooks must remain unaffected; the add-in must not automatically create configuration files for them.
+- Locking, JSON edits through the add-in, concurrent-workbook coordination, market API calls, automatic worksheet creation, licensing and commercial packaging are out of scope for this first prototype.
+
+Later phases may support watchlists, symbol names and exact textual `InsCode` identifiers, stop-loss and target settings, and both manual user editing and add-in-managed editing. The intended rule is manual editing while the corresponding workbook is closed, and add-in-controlled editing with locking while it is open. The JSON schema, file-locking implementation, Save As behavior and concurrent-workbook policy remain open for later design and approval.
+
+Guide the PO through local setup and prototype acceptance **one actionable step per turn**, continuing only after the PO confirms the preceding step.
 
 ## MVP behavior
 
