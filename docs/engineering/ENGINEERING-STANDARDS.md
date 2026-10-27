@@ -1,6 +1,6 @@
 # Engineering Standards — Mandatory for Every Code Change
 
-This document is normative for Codex implementation and ChatGPT review. Always read it with [OPERATING-CONTRACT.md](OPERATING-CONTRACT.md) when preparing **any** coding work package, including trivial fixes.
+This document is normative for Codex implementation and ChatGPT review. Always read it with [OPERATING-CONTRACT.md](../project/OPERATING-CONTRACT.md) when preparing **any** coding work package, including trivial fixes.
 
 ## OOP, SOLID and code architecture
 

@@ -34,7 +34,7 @@ tests/
   TseExcel.Tsetmc.Tests/
 workbook/             # Only approved sanitized templates
 
-docs/gpt/             # ChatGPT context and working contracts
+docs/                 # Canonical documentation, routed through docs/README.md
 ```
 
 Do **not** assume these directories or any `.csproj` already exist. Codex should inspect the actual current repository before implementing.

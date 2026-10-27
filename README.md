@@ -18,27 +18,22 @@ The **user is the Product Owner (PO)**, owns all approvals, runs local acceptanc
 
 The PO and ChatGPT converse **in Persian**. **All documentation, source comments, docstrings and engineering briefs are in English** unless the PO explicitly requests a different language for an artifact.
 
-## ChatGPT context documents
+## Documentation
 
-| Document | Purpose |
+Start at the [Documentation Map](docs/README.md); open only relevant topic documents.
+
+| Area | Current document |
 |---|---|
-| [PROJECT-INSTRUCTIONS](docs/gpt/PROJECT-INSTRUCTIONS.md) | Minimal ChatGPT Project bootstrap |
-| [OPERATING-CONTRACT](docs/gpt/OPERATING-CONTRACT.md) | **Mandatory first read for every conversation** |
-| [Context Index](docs/gpt/README.md) | Task-based lazy-loading map |
-| [PROJECT-CONTEXT](docs/gpt/PROJECT-CONTEXT.md) | Product goal, MVP, excluded phases |
-| [ENGINEERING-STANDARDS](docs/gpt/ENGINEERING-STANDARDS.md) | OOP, SOLID, type safety, mandatory unit tests |
-| [CODEX-HANDOFF](docs/gpt/CODEX-HANDOFF.md) | Complete Codex implementation prompt contract |
-| [DEVELOPMENT-WORKFLOW](docs/gpt/DEVELOPMENT-WORKFLOW.md) | PO-led implementation and local acceptance lifecycle |
-| [ARCHITECTURE](docs/gpt/ARCHITECTURE.md) | Approved direction and proposed boundaries |
-| [WORKBOOK-CONTRACT](docs/gpt/WORKBOOK-CONTRACT.md) | Observed legacy workbook schema and formulas |
-| [DATA-RELIABILITY](docs/gpt/DATA-RELIABILITY.md) | TSETMC validity, status and failure policy |
-| [GOVERNANCE](docs/gpt/GOVERNANCE.md) | Documentation approval, access controls and sync |
-| [DECISIONS](docs/gpt/DECISIONS.md) | Approved decisions versus open questions |
-| [CHANGELOG](docs/gpt/CHANGELOG.md) | Context documentation changes |
+| ChatGPT bootstrap | [PROJECT-INSTRUCTIONS](docs/gpt/PROJECT-INSTRUCTIONS.md) |
+| Project context and workflow | [Project context](docs/project/PROJECT-CONTEXT.md) |
+| Architecture and quality | [Engineering standards](docs/engineering/ENGINEERING-STANDARDS.md) |
+| Workbook and market-data contracts | [Workbook contract](docs/contracts/WORKBOOK-CONTRACT.md) |
+| Accepted decisions and open questions | [Decision index](docs/decisions/README.md) |
+| Revision history | [CHANGELOG](docs/CHANGELOG.md) |
 
 ## ChatGPT Project setup
 
-Current project name: **Mohsen-TSE-Excel**. Paste only [PROJECT-INSTRUCTIONS.md](docs/gpt/PROJECT-INSTRUCTIONS.md) into **Project Instructions**; add the remaining `docs/gpt/*.md` documents to **Project Sources**. At the beginning of every new conversation, read the current [OPERATING-CONTRACT.md](docs/gpt/OPERATING-CONTRACT.md), then the index; load other docs only as needed. Project Sources are **not automatically synchronized** with GitHub: replace changed copies after an approved documentation commit. Re-paste Project Instructions **only if** its bootstrap file changed.
+Current ChatGPT Project name: **Mohsen-TSE-Excel**. Paste [PROJECT-INSTRUCTIONS.md](docs/gpt/PROJECT-INSTRUCTIONS.md) into ChatGPT Project Instructions. The canonical documentation map is [docs/README.md](docs/README.md). Load detailed documents and accepted decisions from GitHub `main` only as relevant. Do not upload the whole `docs/` folder to Project Sources. If GitHub is unavailable, disclose the limitation rather than assuming cached documents are current. Re-paste Project Instructions only when that canonical bootstrap changes.
 
 ## Safety
 

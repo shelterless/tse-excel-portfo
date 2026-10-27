@@ -5,7 +5,7 @@
 1. **PO defines the need.** The user, acting as Product Owner, sets goals, priorities and scope.
 2. **ChatGPT advises and clarifies.** Inspect source **read-only** on verified `main`, read [OPERATING-CONTRACT](OPERATING-CONTRACT.md) and task-specific documents, identify tradeoffs and ask about material ambiguity.
 3. **ChatGPT proposes the work package.** Define boundaries, design considerations, risks, acceptance criteria and test requirements. The PO confirms the scope.
-4. **ChatGPT writes a professional Codex prompt** conforming to [CODEX-HANDOFF](CODEX-HANDOFF.md) and [ENGINEERING-STANDARDS](ENGINEERING-STANDARDS.md), with current reference URLs and explicit **no-commit** constraints.
+4. **ChatGPT writes a professional Codex prompt** conforming to [CODEX-HANDOFF](../engineering/CODEX-HANDOFF.md) and [ENGINEERING-STANDARDS](../engineering/ENGINEERING-STANDARDS.md), with current reference URLs and explicit **no-commit** constraints.
 5. **Codex implements** C# source and automated tests in the development workspace. No commits, pushes, tags, PRs or releases.
 6. **Codex reports technical verification** using actual commands/results; any environment-dependent Excel test remains clearly pending when not executable.
 7. **PO runs local tests and acceptance checks**, including the real workbook/Excel where relevant, and approves or rejects the implementation.
@@ -16,7 +16,7 @@
 1. ChatGPT proposes documentation changes and prepares the **finished English draft**.
 2. **PO reads and explicitly approves** the completed draft. Prior discussions and informal agreement with the idea are not sufficient approval to commit its final wording.
 3. ChatGPT itself applies and **commits the approved documentation changes only** directly to `main` (not via patches for the PO), checks its final contents, and reports exact paths/commit SHA.
-4. PO replaces the changed documents in ChatGPT Project Sources. Replace ChatGPT Project Instructions **only when** `PROJECT-INSTRUCTIONS.md` changed.
+4. Detailed documents remain canonical in GitHub, not duplicated in Project Sources. Replace ChatGPT Project Instructions **only when** `docs/gpt/PROJECT-INSTRUCTIONS.md` changes.
 
 ## Definition of ready for Codex
 
@@ -32,6 +32,14 @@ A work package must have sufficiently clear product behavior, approved boundarie
 - PO has run required local verification and accepted the result **before committing**.
 
 Avoid lengthy rounds of manual micro-tests. Prefer cohesive implementation and one PO acceptance pass, supported by developer-run automated tests.
+
+## Local Development Preference — GUI First
+
+Prefer supported VS Code graphical tools, extensions, Solution Explorer, NuGet package management, and integrated Tasks over repetitive terminal commands. Use direct shell commands for initial setup, troubleshooting, or actions without a suitable graphical workflow.
+
+When build, test, and quality checks recur, use a small repeatable VS Code Task or repository-managed entry point (for example, `checkAll`) if justified. Do not introduce scripts or automation just for the initial JSON proof of concept. Continue to require automated tests for source changes and PO-run local Excel acceptance.
+
+When coaching the PO through local setup, provide one actionable stage at a time and wait for the outcome before advancing.
 
 ## Phase boundary
 

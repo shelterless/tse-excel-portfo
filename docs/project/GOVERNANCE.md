@@ -3,7 +3,7 @@
 ## Source of truth and language
 
 - Repository: `shelterless/tse-excel-portfo`; canonical branch: `main`.
-- At the beginning of **every conversation**, read [OPERATING-CONTRACT](OPERATING-CONTRACT.md) and [Context Index](README.md); only load other task-relevant files.
+- At the beginning of a project conversation, read the current [Documentation Map](../README.md) and lazily load only relevant canonical documents. Load [Operating Contract](OPERATING-CONTRACT.md) for governance, source handoffs, documentation modifications, and other tasks where its rules materially apply.
 - PO/ChatGPT conversation is **Persian**; all repository documents, source comments/docstrings and work-package artifacts are **English** unless the PO explicitly directs an exception.
 - A newer explicit PO decision takes precedence over stale contextual copies. Conflicts affecting behavior or scope require clarification.
 
@@ -23,9 +23,9 @@ ChatGPT's ability to write documentation does **not** grant permission to modify
 2. ChatGPT presents the **finished draft** and the proposed changed-file list to the PO. **Do not write GitHub yet.**
 3. PO explicitly approves the draft (possibly with corrections). If revised, present the updated version for approval where material.
 4. ChatGPT itself writes and commits **approved documentation files only** directly to `main` (not via patches for the PO), avoiding unrelated rewrites, and reads back the final files. Report actual commits and changed paths. If GitHub write fails, say so without claiming completion.
-5. PO replaces only affected copied ChatGPT Project Sources.
-6. **Only if `docs/gpt/PROJECT-INSTRUCTIONS.md` changes**, tell the PO to copy its new full contents into ChatGPT Project Instructions.
-7. Record approved lasting decisions in [DECISIONS](DECISIONS.md) and material documentation changes in [CHANGELOG](CHANGELOG.md).
+5. Keep detailed documentation in canonical GitHub and retrieve it lazily. Do not require copied Project Sources; if obsolete copies exist, ask the PO to remove or replace them after verifying access to the canonical files.
+6. **Only if `docs/gpt/PROJECT-INSTRUCTIONS.md` changes**, tell the PO to paste the updated complete bootstrap into ChatGPT Project Instructions.
+7. Record approved lasting decisions in [DECISIONS](../decisions/HISTORICAL-DECISIONS.md) and material documentation changes in [CHANGELOG](../CHANGELOG.md).
 
 ## Codex delivery and Git rule
 

@@ -1,6 +1,6 @@
-# Operating Contract — Mandatory at the Start of Every Conversation
+# Operating Contract — Project Authority
 
-**Mandatory read:** At the start of **every new conversation or work session**, ChatGPT must read the current `main` version of this document **before** substantive planning, discussion, review or documentation. Then read [README.md](README.md) and lazily load only task-specific materials. Maintain these rules throughout the conversation.
+This document is authoritative for repository roles, source and documentation ownership, handoffs, and change approval. The current ChatGPT Project bootstrap and `docs/README.md` are the minimal conversation entry point. Load this contract whenever the task materially involves implementation handoffs, source review, Git authority, documentation maintenance, or repository governance; do not automatically load the whole contract for unrelated casual conversations.
 
 ## Language rules
 
@@ -21,7 +21,7 @@
 
 ## Mandatory engineering standards
 
-Read [ENGINEERING-STANDARDS.md](ENGINEERING-STANDARDS.md) **before every coding task or code review**, however small. Every handoff must enforce:
+Read [ENGINEERING-STANDARDS.md](../engineering/ENGINEERING-STANDARDS.md) **before every coding task or code review**, however small. Every handoff must enforce:
 
 - Idiomatic, maintainable C#/.NET; correct **OOP, SOLID, separation of concerns, explicit contracts and type safety**.
 - Sound design patterns **when justified**, without overengineering.
@@ -29,7 +29,7 @@ Read [ENGINEERING-STANDARDS.md](ENGINEERING-STANDARDS.md) **before every coding 
 - Explicit nullability, error handling, cancellation and timeouts where appropriate; exact `InsCode` handling, money units, API freshness/coverage and preservation of user formulas and data.
 - Honest build/test reporting, no invented coverage or green checks.
 
-Use [CODEX-HANDOFF.md](CODEX-HANDOFF.md) to prepare every professional implementation prompt for Codex.
+Use [CODEX-HANDOFF.md](../engineering/CODEX-HANDOFF.md) to prepare every professional implementation prompt for Codex.
 
 ## Source of truth, uncertainty, scope and safety
 
@@ -44,6 +44,6 @@ Use [CODEX-HANDOFF.md](CODEX-HANDOFF.md) to prepare every professional implement
 1. ChatGPT prepares **complete documentation drafts** and presents them to the PO **before any Git modification**. General discussion is **not** approval.
 2. Only after **explicit PO approval of the finished draft**, ChatGPT must itself edit and commit **documentation only** directly to `main`, rather than handing patches to the PO. Verify the written files by reading back and report the actual commit SHA(s).
 3. **Source is read-only for ChatGPT even when Git write access exists.** Documentation access does not grant source modification rights.
-4. Identify each changed context document for replacement in ChatGPT Project Sources.
+4. Detailed documents remain canonical in GitHub and are retrieved lazily; do not require duplicate Project Sources. If obsolete copies exist, ask the PO to remove them after confirming GitHub access.
 5. **Only when `docs/gpt/PROJECT-INSTRUCTIONS.md` changes** tell the PO to paste the updated bootstrap into ChatGPT Project Instructions.
 6. Follow [GOVERNANCE.md](GOVERNANCE.md).

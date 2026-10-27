@@ -2,6 +2,14 @@
 
 > This file describes **approved documentation changes**, not source-code releases.
 
+## 2026-10-27 — Approved documentation layout migration
+
+- Moved canonical project, engineering, contract and governance documents out of `docs/gpt/` into topic folders without discretionary rewriting.
+- Split D-001 through D-021 into independent ADR files, retaining all original statements/statuses and a verbatim historical log plus open questions and evidence.
+- Adopted the minimal bootstrap and lazy-loading rules through D-022, documenting supersession of D-013 and D-014.
+- Recorded GUI-first local development and deferred automatic release/update goals through D-023 and D-024.
+- Repaired documentation links and revised ChatGPT Project synchronization guidance.
+
 ## 2026-10-27 — PO-approved prototype scope and tool clarification
 
 - Recorded a deliberately minimal Excel-DNA pre-MVP prototype: Ribbon commands to create a workbook-adjacent JSON file and show its contents, without locking or market APIs.

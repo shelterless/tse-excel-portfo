@@ -18,7 +18,7 @@ The GitHub repository is `shelterless/tse-excel-portfo`; the current ChatGPT Pro
 - **C#/.NET + Excel-DNA/XLL** for an initially Windows desktop Excel add-in; **no VBA/VB** in the new product.
 - Excel remains the presentation, workbook, tables and formulas layer; typed C# modules handle domain rules and market-data integration.
 - Local-first building/testing/installation for MVP.
-- Strong OOP/SOLID/type safety/automated unit-test requirements are mandatory for **every implementation change**, per [ENGINEERING-STANDARDS](ENGINEERING-STANDARDS.md).
+- Strong OOP/SOLID/type safety/automated unit-test requirements are mandatory for **every implementation change**, per [ENGINEERING-STANDARDS](../engineering/ENGINEERING-STANDARDS.md).
 - **PO** approves scope, performs local acceptance tests and commits source. **ChatGPT** consults, documents and writes Codex work packages; it reads source read-only and commits only PO-approved documentation. **Codex** implements/tests but never commits.
 
 ## Immediate proof of concept — before the market-data MVP
@@ -46,6 +46,10 @@ Guide the PO through local setup and prototype acceptance **one actionable step 
 ## Out of scope for MVP
 
 Auto-Updater, license/subscription management, hosted backend, commercial data service, production licensing/distribution and Python engine. These may be considered after an MVP acceptance milestone.
+
+### Deferred commercial distribution and updates
+
+A later phase may provide automated CI/CD, signed add-in release packaging, notifications when a new version is available, and a safe user-initiated one-click update experience. Installer privileges, Excel/XLL file locks, possible Excel restart requirements, compatibility, rollback, trust and signing must be assessed before choosing an updater design. No release or updater infrastructure is part of the first JSON proof of concept or is authorized by this statement.
 
 ## Unresolved decisions — ask PO when material
 

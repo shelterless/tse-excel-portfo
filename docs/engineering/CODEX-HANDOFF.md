@@ -6,14 +6,14 @@ ChatGPT prepares a **complete implementation prompt** only after discussing the 
 
 1. **Objective and context:** user problem, business outcome and verified existing behavior.
 2. **Repository baseline:** `shelterless/tse-excel-portfo`, current `main`, known files and verified commit when available. Do not invent paths or claim a build exists.
-3. **Read-first documentation:** always link to [OPERATING-CONTRACT](OPERATING-CONTRACT.md), [ENGINEERING-STANDARDS](ENGINEERING-STANDARDS.md) and this handoff; add only task-relevant [ARCHITECTURE](ARCHITECTURE.md), [WORKBOOK-CONTRACT](WORKBOOK-CONTRACT.md), [DATA-RELIABILITY](DATA-RELIABILITY.md) and [DEVELOPMENT-WORKFLOW](DEVELOPMENT-WORKFLOW.md).
+3. **Read-first documentation:** always link to [OPERATING-CONTRACT](../project/OPERATING-CONTRACT.md), [ENGINEERING-STANDARDS](ENGINEERING-STANDARDS.md) and this handoff; add only task-relevant [ARCHITECTURE](ARCHITECTURE.md), [WORKBOOK-CONTRACT](../contracts/WORKBOOK-CONTRACT.md), [DATA-RELIABILITY](../contracts/DATA-RELIABILITY.md) and [DEVELOPMENT-WORKFLOW](../project/DEVELOPMENT-WORKFLOW.md).
 4. **PO-approved scope:** functional requirements, in-scope/out-of-scope decisions, invariants and constraints.
 5. **Design and implementation requirements:** clean C#, OOP, SOLID, type safety, nullable reference safety, justified design patterns, dependency boundaries, English comments/docstrings and data integrity.
 6. **Behavioral edge cases:** missing/invalid data, halted symbols, HTTP failures, stale values, localization/precision and workbook ownership as relevant.
 7. **Tests and verification:** **unit tests for every change**, adapter/contract/integration tests as applicable, reproducible build/test commands and sanitization of fixtures.
 8. **Acceptance criteria:** objective conditions, expected output, failure behavior, no-loss invariants, and the PO's local Excel acceptance checklist.
 9. **Delivery report:** changed files, architecture choices, exact commands and observed results, unrun tests/reasons, risks and pending PO decisions.
-10. **Hard Git restrictions:** **Codex MUST NOT commit, push, tag, create/merge PRs or publish releases.** Leave all source changes uncommitted for the PO's local testing and personal commit. Do not edit `docs/gpt` governance without the PO's separate documentation approval process.
+10. **Hard Git restrictions:** **Codex MUST NOT commit, push, tag, create/merge PRs or publish releases.** Leave all source changes uncommitted for the PO's local testing and personal commit. Do not edit project governance documentation without the PO's separate documentation approval process.
 
 ## Mandatory escalation
 
