@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json;
 
-namespace TseExcel.AddIn;
+namespace TseExcel.Infrastructure.Storage.Json;
 
 internal static class WorkbookJsonFile
 {
@@ -33,3 +33,4 @@ internal static class WorkbookJsonFile
         return content;
     }
 }
+

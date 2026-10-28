@@ -1,4 +1,4 @@
-namespace TseExcel.AddIn;
+namespace TseExcel.Infrastructure.Storage.Json;
 
 internal static class WorkbookJsonPath
 {
@@ -28,3 +28,4 @@ internal static class WorkbookJsonPath
         return Path.ChangeExtension(fullPath, ".json");
     }
 }
+

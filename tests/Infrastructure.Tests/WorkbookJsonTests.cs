@@ -2,10 +2,14 @@ using System.Text;
 using System.Text.Json;
 using Xunit;
 
-namespace TseExcel.AddIn.Tests;
+using TseExcel.Infrastructure.Storage.Json;
+using TseExcel.Application.WorkbookJson;
+
+namespace TseExcel.Infrastructure.Tests;
 
 public sealed class WorkbookJsonTests : IDisposable
 {
+    private readonly IWorkbookJsonStore store = new WorkbookJsonStore();
     private readonly string directory = Path.Combine(Path.GetTempPath(), "TseExcel.Tests", Guid.NewGuid().ToString("N"));
 
     public WorkbookJsonTests() => Directory.CreateDirectory(directory);
@@ -22,7 +26,7 @@ public sealed class WorkbookJsonTests : IDisposable
         string workbookPath = CreateWorkbook(workbookName);
         byte[] original = File.ReadAllBytes(workbookPath);
 
-        Assert.Equal(Path.Combine(directory, jsonName), WorkbookJsonPath.Resolve(workbookPath));
+        Assert.Equal(Path.Combine(directory, jsonName), store.ResolvePath(workbookPath));
 
         Assert.Single(Directory.GetFiles(directory));
         Assert.Equal(original, File.ReadAllBytes(workbookPath));
@@ -40,44 +44,44 @@ public sealed class WorkbookJsonTests : IDisposable
     [InlineData("C:\\bad?.xlsx")]
     public void Resolve_RejectsUnsavedOrInvalidPaths(string? path)
     {
-        Assert.Throws<ArgumentException>(() => WorkbookJsonPath.Resolve(path));
+        Assert.Throws<ArgumentException>(() => store.ResolvePath(path));
         Assert.Empty(Directory.GetFileSystemEntries(directory));
     }
 
     [Fact]
     public void Resolve_RejectsMissingWorkbookWithoutCreatingIt()
     {
-        Assert.Throws<FileNotFoundException>(() => WorkbookJsonPath.Resolve(Path.Combine(directory, "Missing.xlsx")));
+        Assert.Throws<FileNotFoundException>(() => store.ResolvePath(Path.Combine(directory, "Missing.xlsx")));
         Assert.Empty(Directory.GetFileSystemEntries(directory));
     }
 
     [Fact]
     public void Resolve_RejectsDirectory()
     {
-        Assert.Throws<ArgumentException>(() => WorkbookJsonPath.Resolve(directory));
+        Assert.Throws<ArgumentException>(() => store.ResolvePath(directory));
         Assert.Empty(Directory.GetFileSystemEntries(directory));
     }
 
     [Fact]
     public void CreateIfMissing_CreatesMinimalUtf8Json()
     {
-        string path = WorkbookJsonPath.Resolve(CreateWorkbook());
+        string path = store.ResolvePath(CreateWorkbook());
 
-        Assert.True(WorkbookJsonFile.CreateIfMissing(path));
+        Assert.True(store.CreateIfMissing(path));
 
         Assert.Equal("{}"u8.ToArray(), File.ReadAllBytes(path));
-        Assert.Equal("{}", WorkbookJsonFile.Read(path));
+        Assert.Equal("{}", store.Read(path));
     }
 
     [Fact]
     public void CreateIfMissing_PreservesExistingBytesEvenForMalformedJson()
     {
-        string path = WorkbookJsonPath.Resolve(CreateWorkbook());
+        string path = store.ResolvePath(CreateWorkbook());
         byte[] original = [0xEF, 0xBB, 0xBF, 0x7B, 0xFF];
         File.WriteAllBytes(path, original);
 
-        Assert.False(WorkbookJsonFile.CreateIfMissing(path));
-        Assert.False(WorkbookJsonFile.CreateIfMissing(path));
+        Assert.False(store.CreateIfMissing(path));
+        Assert.False(store.CreateIfMissing(path));
 
         Assert.Equal(original, File.ReadAllBytes(path));
     }
@@ -85,22 +89,22 @@ public sealed class WorkbookJsonTests : IDisposable
     [Fact]
     public void CreateIfMissing_PreservesFileAppearingAfterPathResolution()
     {
-        string path = WorkbookJsonPath.Resolve(CreateWorkbook());
+        string path = store.ResolvePath(CreateWorkbook());
         File.WriteAllText(path, "{\"existing\":true}");
 
-        Assert.False(WorkbookJsonFile.CreateIfMissing(path));
+        Assert.False(store.CreateIfMissing(path));
         Assert.Equal("{\"existing\":true}", File.ReadAllText(path));
     }
 
     [Fact]
     public void Read_ReturnsExactContentForDisplayWithoutChangingFiles()
     {
-        string path = WorkbookJsonPath.Resolve(CreateWorkbook());
+        string path = store.ResolvePath(CreateWorkbook());
         const string content = "{\r\n  \"message\": \"سلام\"\r\n}\r\n";
         File.WriteAllText(path, content, new UTF8Encoding(true));
         byte[] original = File.ReadAllBytes(path);
 
-        Assert.Equal(content, WorkbookJsonFile.Read(path));
+        Assert.Equal(content, store.Read(path));
 
         Assert.Equal(original, File.ReadAllBytes(path));
     }
@@ -108,9 +112,9 @@ public sealed class WorkbookJsonTests : IDisposable
     [Fact]
     public void Read_MissingJsonThrowsWithoutCreatingIt()
     {
-        string path = WorkbookJsonPath.Resolve(CreateWorkbook());
+        string path = store.ResolvePath(CreateWorkbook());
 
-        Assert.Throws<FileNotFoundException>(() => WorkbookJsonFile.Read(path));
+        Assert.Throws<FileNotFoundException>(() => store.Read(path));
 
         Assert.False(File.Exists(path));
     }
@@ -124,7 +128,7 @@ public sealed class WorkbookJsonTests : IDisposable
         string path = Path.Combine(directory, "Portfolio.json");
         File.WriteAllText(path, content);
 
-        Assert.ThrowsAny<JsonException>(() => WorkbookJsonFile.Read(path));
+        Assert.ThrowsAny<JsonException>(() => store.Read(path));
 
         Assert.Equal(content, File.ReadAllText(path));
     }
@@ -136,7 +140,7 @@ public sealed class WorkbookJsonTests : IDisposable
         byte[] original = [0x7B, 0xFF, 0x7D];
         File.WriteAllBytes(path, original);
 
-        Assert.Throws<DecoderFallbackException>(() => WorkbookJsonFile.Read(path));
+        Assert.Throws<DecoderFallbackException>(() => store.Read(path));
 
         Assert.Equal(original, File.ReadAllBytes(path));
     }
@@ -146,8 +150,8 @@ public sealed class WorkbookJsonTests : IDisposable
     {
         string path = Path.Combine(directory, "missing", "Portfolio.json");
 
-        Assert.Throws<DirectoryNotFoundException>(() => WorkbookJsonFile.CreateIfMissing(path));
-        Assert.Throws<DirectoryNotFoundException>(() => WorkbookJsonFile.Read(path));
+        Assert.Throws<DirectoryNotFoundException>(() => store.CreateIfMissing(path));
+        Assert.Throws<DirectoryNotFoundException>(() => store.Read(path));
         Assert.False(Directory.Exists(Path.GetDirectoryName(path)));
     }
 
@@ -160,7 +164,7 @@ public sealed class WorkbookJsonTests : IDisposable
         byte[] original = "Unchanged directory content."u8.ToArray();
         File.WriteAllBytes(existingFile, original);
 
-        Exception? createException = Record.Exception(() => WorkbookJsonFile.CreateIfMissing(path));
+        Exception? createException = Record.Exception(() => store.CreateIfMissing(path));
         Assert.True(createException is IOException or UnauthorizedAccessException,
             $"Expected a filesystem failure, got {createException?.GetType().FullName ?? "no exception"}.");
         Assert.False(File.Exists(path));
@@ -168,7 +172,7 @@ public sealed class WorkbookJsonTests : IDisposable
         Assert.Equal(new[] { existingFile }, Directory.GetFileSystemEntries(path));
         Assert.Equal(original, File.ReadAllBytes(existingFile));
 
-        Assert.Throws<UnauthorizedAccessException>(() => WorkbookJsonFile.Read(path));
+        Assert.Throws<UnauthorizedAccessException>(() => store.Read(path));
         Assert.False(File.Exists(path));
         Assert.Equal(new[] { path }, Directory.GetFileSystemEntries(directory));
         Assert.Equal(new[] { existingFile }, Directory.GetFileSystemEntries(path));
@@ -182,20 +186,20 @@ public sealed class WorkbookJsonTests : IDisposable
         File.WriteAllText(path, "{}");
         using FileStream lockedFile = new(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
-        Assert.Throws<IOException>(() => WorkbookJsonFile.Read(path));
+        Assert.Throws<IOException>(() => store.Read(path));
     }
 
     [Fact]
     public void Commands_KeepWorkbooksIsolated()
     {
-        string first = WorkbookJsonPath.Resolve(CreateWorkbook("First.xlsx"));
-        string second = WorkbookJsonPath.Resolve(CreateWorkbook("Second.xlsx"));
+        string first = store.ResolvePath(CreateWorkbook("First.xlsx"));
+        string second = store.ResolvePath(CreateWorkbook("Second.xlsx"));
 
-        Assert.True(WorkbookJsonFile.CreateIfMissing(first));
+        Assert.True(store.CreateIfMissing(first));
 
         Assert.False(File.Exists(second));
-        Assert.Throws<FileNotFoundException>(() => WorkbookJsonFile.Read(second));
-        Assert.Equal("{}", WorkbookJsonFile.Read(first));
+        Assert.Throws<FileNotFoundException>(() => store.Read(second));
+        Assert.Equal("{}", store.Read(first));
     }
 
     private string CreateWorkbook(string name = "Portfolio.xlsx")
@@ -207,3 +211,5 @@ public sealed class WorkbookJsonTests : IDisposable
 
     public void Dispose() => Directory.Delete(directory, recursive: true);
 }
+
+

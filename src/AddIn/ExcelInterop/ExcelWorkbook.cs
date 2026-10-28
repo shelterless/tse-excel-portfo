@@ -1,14 +1,12 @@
-using ExcelDna.Integration;
+namespace TseExcel.AddIn.ExcelInterop;
 
-namespace TseExcel.AddIn;
-
-internal static class ExcelWorkbook
+internal sealed class ExcelWorkbook(Func<object> getApplication)
 {
-    // Called synchronously from a Ribbon callback on Excel's UI thread.
-    internal static string GetActiveJsonPath()
+    // Called synchronously from a Ribbon callback on Excel's UI thread; never cache COM objects or paths.
+    internal string? GetActiveFullName()
     {
-        // Late binding stays at the COM boundary; the path/file logic uses typed .NET values.
-        dynamic application = ExcelDnaUtil.Application;
+        // Late binding stays at the COM boundary; the application receives only a typed path.
+        dynamic application = getApplication();
         dynamic? workbook = application.ActiveWorkbook;
         if (workbook is null)
         {
@@ -22,6 +20,6 @@ internal static class ExcelWorkbook
         }
 
         string? fullName = workbook.FullName;
-        return WorkbookJsonPath.Resolve(fullName);
+        return fullName;
     }
 }

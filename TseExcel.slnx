@@ -1,8 +1,13 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="src/TseExcel.AddIn/TseExcel.AddIn.csproj" />
+    <Project Path="src/Domain/Domain.csproj" />
+    <Project Path="src/Application/Application.csproj" />
+    <Project Path="src/Infrastructure/Infrastructure.csproj" />
+    <Project Path="src/AddIn/AddIn.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/TseExcel.AddIn.Tests/TseExcel.AddIn.Tests.csproj" />
+    <Project Path="tests/Application.Tests/Application.Tests.csproj" />
+    <Project Path="tests/Infrastructure.Tests/Infrastructure.Tests.csproj" />
+    <Project Path="tests/AddIn.Tests/AddIn.Tests.csproj" />
   </Folder>
 </Solution>

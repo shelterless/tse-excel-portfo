@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>TseExcel.AddIn</AssemblyName>
+    <RootNamespace>TseExcel.AddIn</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ExcelAddInName>TseExcel.AddIn Add-In</ExcelAddInName>
+    <ExcelAddInExplicitExports>true</ExcelAddInExplicitExports>
+    <!-- References are packed for runtime loading, not scanned for Excel registration. -->
+    <ExcelAddInInclude>TseExcel.Application.dll;TseExcel.Infrastructure.dll;TseExcel.Domain.dll</ExcelAddInInclude>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="TseExcel.AddIn.Tests" />
+    <PackageReference Include="ExcelDna.AddIn" Version="1.9.0" />
+    <ProjectReference Include="../Application/Application.csproj" />
+    <ProjectReference Include="../Infrastructure/Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

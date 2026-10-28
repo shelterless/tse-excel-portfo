@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>TseExcel.AddIn.Tests</AssemblyName>
+    <RootNamespace>TseExcel.AddIn.Tests</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -15,6 +17,7 @@
     </PackageReference>
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../../src/TseExcel.AddIn/TseExcel.AddIn.csproj" />
+    <ProjectReference Include="../../src/AddIn/AddIn.csproj" />
   </ItemGroup>
 </Project>
+

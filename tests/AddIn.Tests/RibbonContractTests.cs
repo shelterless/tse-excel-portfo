@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Xml.Linq;
 using ExcelDna.Integration.CustomUI;
 using Xunit;
+using TseExcel.AddIn.Ribbon;
 
 namespace TseExcel.AddIn.Tests;
 
@@ -40,3 +41,4 @@ public class RibbonContractTests
         }
     }
 }
+
