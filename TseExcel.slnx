@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TseExcel.AddIn/TseExcel.AddIn.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TseExcel.AddIn.Tests/TseExcel.AddIn.Tests.csproj" />
+  </Folder>
+</Solution>
