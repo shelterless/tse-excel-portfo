@@ -7,7 +7,7 @@ The unresolved issues and evidence below are carried forward from the verbatim [
 | Topic | Status |
 |---|---|
 | Minimum supported Excel and Windows versions, x86/x64 and exact .NET/Excel-DNA versions | Open |
-| `.sln`/project structure, NuGet versions, Ribbon UX and local add-in installation | Four-project target and naming approved by D-025; source migration pending. The local Ribbon/JSON prototype was validated; broader version compatibility and deployment choices remain open. |
+| `.sln`/project structure, NuGet versions, Ribbon UX and local add-in installation | Four-project structure and naming approved by D-025 and implemented in commit a98a6bd7. Ribbon/JSON Excel acceptance passed; broader version compatibility and deployment choices remain open. |
 | Workbook schema versioning and migration from the VBA prototype | Requires current workbook inspection and PO approval |
 | Market-data freshness, ClientType publication timing, bulk coverage thresholds | Open; needs evidence |
 | TSETMC terms of use, scaling/rate limits and rights for commercial redistribution | Open |

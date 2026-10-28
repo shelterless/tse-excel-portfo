@@ -1,6 +1,6 @@
 # Architecture — Approved Four-Project Boundaries and Deferred Integrations
 
-> **Status:** The four-project modular-monolith architecture, feature-first organization, and naming conventions are approved in [D-025](../decisions/0025-four-project-feature-first-architecture.md). Extensible broker integration and Excel-hosted trading are approved as deferred direction in [D-026](../decisions/0026-extensible-brokers-excel-hosted-trading.md). The source refactoring, detailed external API contracts, supported platforms and deployment format are not implemented or finalized by these decisions.
+> **Status:** The four-project modular-monolith architecture, feature-first organization, and naming conventions are approved in [D-025](../decisions/0025-four-project-feature-first-architecture.md). Extensible broker integration and Excel-hosted trading are approved as deferred direction in [D-026](../decisions/0026-extensible-brokers-excel-hosted-trading.md). The four-project source refactoring was completed and accepted in commit a98a6bd7. Detailed external API contracts, supported platforms and deployment format remain open.
 
 The validated pre-MVP proof of concept currently implements Excel Ribbon interaction and workbook-adjacent JSON creation/read/display. Market-data and broker integrations remain separate future tasks.
 
@@ -23,7 +23,7 @@ Infrastructure (adapters implementing Application contracts):
 
 Infrastructure references Application and, where needed, Domain; AddIn references Infrastructure only for application composition. The Domain layer must be independently unit-testable without Excel, live HTTP or market hours. Excel interop must not contain pricing, financial or order-execution business rules.
 
-## Approved target repository layout — migration pending
+## Approved project layout — core migration completed
 
 ```text
 src/
@@ -50,7 +50,7 @@ The physical project names and folders are short; assembly names and namespaces 
 | `Infrastructure` | `Application` and, when needed, `Domain` |
 | `AddIn` | `Application`, plus `Infrastructure` for composition/bootstrap only |
 
-The existing implementation still uses `src/TseExcel.AddIn/` and its tests. The four-project structure is **approved but not yet implemented**; Codex must inspect the current repository and preserve tested Ribbon/JSON behavior during a separate PO-approved migration. The TSETMC and Mofid folders represent future integrations, not already-implemented adapters.
+The four-project structure was implemented in commit `a98a6bd7` and accepted by the PO after successful Excel testing. The TSETMC and Mofid folders represent future integrations, not already-implemented adapters.
 
 ## Mandatory design properties
 
