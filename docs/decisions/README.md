@@ -30,5 +30,7 @@ A decision's original statement remains historically intact. Superseded records 
 | D-022 | Minimal ChatGPT Context Routing | Accepted | [0022-minimal-chatgpt-context-routing.md](0022-minimal-chatgpt-context-routing.md) |
 | D-023 | GUI-First Local Development Workflow | Accepted | [0023-gui-first-local-development.md](0023-gui-first-local-development.md) |
 | D-024 | Future Automated Release and User-Initiated Update | Accepted as deferred future direction | [0024-future-release-and-update.md](0024-future-release-and-update.md) |
+| D-025 | Four-Project Modular Architecture and Feature-First Organization | Accepted | [0025-four-project-feature-first-architecture.md](0025-four-project-feature-first-architecture.md) |
+| D-026 | Extensible Broker Integration and Excel-Hosted Order Execution | Accepted; implementation deferred | [0026-extensible-brokers-excel-hosted-trading.md](0026-extensible-brokers-excel-hosted-trading.md) |
 
 Future material decisions require PO approval before implementation. Use new numbered ADRs and explicit supersession when warranted.

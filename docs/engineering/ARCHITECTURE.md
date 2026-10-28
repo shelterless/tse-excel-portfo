@@ -1,43 +1,56 @@
-# Architecture — Approved Direction and Proposed Boundaries
+# Architecture — Approved Four-Project Boundaries and Deferred Integrations
 
-> **Status:** The C#/.NET + Excel-DNA direction is approved. The detailed project layout, interfaces, dependencies, supported platforms and deployment format remain **proposals**, not implemented facts.
+> **Status:** The four-project modular-monolith architecture, feature-first organization, and naming conventions are approved in [D-025](../decisions/0025-four-project-feature-first-architecture.md). Extensible broker integration and Excel-hosted trading are approved as deferred direction in [D-026](../decisions/0026-extensible-brokers-excel-hosted-trading.md). The source refactoring, detailed external API contracts, supported platforms and deployment format are not implemented or finalized by these decisions.
 
-The immediate pre-MVP proof of concept covers only Excel Ribbon interaction and workbook-adjacent JSON creation/read/display; it does not require implementing the proposed market-data layers below.
+The validated pre-MVP proof of concept currently implements Excel Ribbon interaction and workbook-adjacent JSON creation/read/display. Market-data and broker integrations remain separate future tasks.
 
-## Intended separation of concerns
+## Approved separation of concerns
 
 ```text
 Excel Workbook (user data, formulas, tables, dashboards)
                   ↕
-Excel-DNA XLL / Ribbon / Excel interop adapter (C#)
-                  ↕
-Application orchestration (refresh workflow, results, diagnostics)
-                  ↕
-Domain/core (typed instrument IDs, quotes, states, validation, calculations)
-                  ↕
-TSETMC adapter (HTTP, parsing, DTO translation, quality metadata)
-                  ↕
-TSETMC endpoints
+AddIn (Excel-DNA, Ribbon, Excel interop, composition)
+                  ↓
+Application (use cases, workflows, external capability contracts)
+                  ↓
+Domain (typed identifiers, market/trading models, rules, calculations)
+
+Infrastructure (adapters implementing Application contracts):
+  MarketData/Tsetmc/   → TSETMC endpoints
+  Brokers/Mofid/       → Mofid API (future integration)
+  Storage/Json/        → File persistence
 ```
 
-The domain/core layer must be independently unit-testable without Excel, live HTTP or market hours. Excel interop should not contain pricing or financial business rules.
+Infrastructure references Application and, where needed, Domain; AddIn references Infrastructure only for application composition. The Domain layer must be independently unit-testable without Excel, live HTTP or market hours. Excel interop must not contain pricing, financial or order-execution business rules.
 
-## Candidate repository layout — not yet created
+## Approved target repository layout — migration pending
 
 ```text
 src/
-  TseExcel.Core/
-  TseExcel.Tsetmc/
-  TseExcel.AddIn/
+  Domain/Domain.csproj
+  Application/Application.csproj
+  Infrastructure/Infrastructure.csproj
+    MarketData/Tsetmc/
+    Brokers/Mofid/
+    Storage/Json/
+  AddIn/AddIn.csproj
 tests/
-  TseExcel.Core.Tests/
-  TseExcel.Tsetmc.Tests/
+  [matching test projects as needed]
 workbook/             # Only approved sanitized templates
 
 docs/                 # Canonical documentation, routed through docs/README.md
 ```
 
-Do **not** assume these directories or any `.csproj` already exist. Codex should inspect the actual current repository before implementing.
+The physical project names and folders are short; assembly names and namespaces retain the `TseExcel.` prefix (for example, `Domain.csproj`, `TseExcel.Domain`, and `TseExcel.Domain.Trading`). Organize code by feature rather than global `Services/`, `DTOs/`, or `Interfaces/` buckets. Create folders and abstractions when needed, not as empty future-provider scaffolding.
+
+| Project | Permitted production project references |
+|---|---|
+| `Domain` | None |
+| `Application` | `Domain` |
+| `Infrastructure` | `Application` and, when needed, `Domain` |
+| `AddIn` | `Application`, plus `Infrastructure` for composition/bootstrap only |
+
+The existing implementation still uses `src/TseExcel.AddIn/` and its tests. The four-project structure is **approved but not yet implemented**; Codex must inspect the current repository and preserve tested Ribbon/JSON behavior during a separate PO-approved migration. The TSETMC and Mofid folders represent future integrations, not already-implemented adapters.
 
 ## Mandatory design properties
 

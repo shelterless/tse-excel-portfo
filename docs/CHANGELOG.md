@@ -2,6 +2,12 @@
 
 > This file describes **approved documentation changes**, not source-code releases.
 
+## 2026-10-28 — Architecture and future trading decisions
+
+- Accepted D-025: four-project modular monolith, feature-first organization, dependency boundaries, short physical project names and `TseExcel.`-qualified assemblies/namespaces.
+- Accepted D-026 as deferred implementation direction: Mofid-first broker extensibility, manually confirmed orders, and future preapproved automated orders only while Excel and the add-in are active.
+- Aligned the architecture proposal and open-questions index with these decisions; source refactoring and trading/API integrations remain separate future work.
+
 ## 2026-10-27 — Approved documentation layout migration
 
 - Moved canonical project, engineering, contract and governance documents out of `docs/gpt/` into topic folders without discretionary rewriting.
