@@ -1,0 +1,12 @@
+F:\Projects\Portfo\TSE-Excel-Portfo\src\TseExcel.AddIn\bin\Debug\net10.0\TseExcel.AddIn.deps.json
+F:\Projects\Portfo\TSE-Excel-Portfo\src\TseExcel.AddIn\bin\Debug\net10.0\TseExcel.AddIn.dll
+F:\Projects\Portfo\TSE-Excel-Portfo\src\TseExcel.AddIn\bin\Debug\net10.0\TseExcel.AddIn.pdb
+F:\Projects\Portfo\TSE-Excel-Portfo\src\TseExcel.AddIn\obj\Debug\net10.0\TseExcel.AddIn.GeneratedMSBuildEditorConfig.editorconfig
+F:\Projects\Portfo\TSE-Excel-Portfo\src\TseExcel.AddIn\obj\Debug\net10.0\TseExcel.AddIn.AssemblyInfoInputs.cache
+F:\Projects\Portfo\TSE-Excel-Portfo\src\TseExcel.AddIn\obj\Debug\net10.0\TseExcel.AddIn.AssemblyInfo.cs
+F:\Projects\Portfo\TSE-Excel-Portfo\src\TseExcel.AddIn\obj\Debug\net10.0\TseExcel.AddIn.csproj.CoreCompileInputs.cache
+F:\Projects\Portfo\TSE-Excel-Portfo\src\TseExcel.AddIn\obj\Debug\net10.0\TseExcel.AddIn.sourcelink.json
+F:\Projects\Portfo\TSE-Excel-Portfo\src\TseExcel.AddIn\obj\Debug\net10.0\TseExcel.AddIn.dll
+F:\Projects\Portfo\TSE-Excel-Portfo\src\TseExcel.AddIn\obj\Debug\net10.0\refint\TseExcel.AddIn.dll
+F:\Projects\Portfo\TSE-Excel-Portfo\src\TseExcel.AddIn\obj\Debug\net10.0\TseExcel.AddIn.pdb
+F:\Projects\Portfo\TSE-Excel-Portfo\src\TseExcel.AddIn\obj\Debug\net10.0\ref\TseExcel.AddIn.dll
