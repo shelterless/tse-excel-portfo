@@ -32,5 +32,6 @@ A decision's original statement remains historically intact. Superseded records 
 | D-024 | Future Automated Release and User-Initiated Update | Accepted as deferred future direction | [0024-future-release-and-update.md](0024-future-release-and-update.md) |
 | D-025 | Four-Project Modular Architecture and Feature-First Organization | Accepted | [0025-four-project-feature-first-architecture.md](0025-four-project-feature-first-architecture.md) |
 | D-026 | Extensible Broker Integration and Excel-Hosted Order Execution | Accepted; implementation deferred | [0026-extensible-brokers-excel-hosted-trading.md](0026-extensible-brokers-excel-hosted-trading.md) |
+| D-027 | EasyTrader Web API Integration and Local Trading Proof of Concept | Accepted; implementation pending | [0027-easytrader-web-api-local-trading-poc.md](0027-easytrader-web-api-local-trading-poc.md) |
 
 Future material decisions require PO approval before implementation. Use new numbered ADRs and explicit supersession when warranted.
