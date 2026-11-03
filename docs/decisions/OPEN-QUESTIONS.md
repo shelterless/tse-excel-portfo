@@ -14,8 +14,8 @@ The unresolved issues and evidence below are carried forward from the verbatim [
 | Public versus private repository for proprietary source code | Open; currently observed as public |
 | Source build automation, signing and release distribution | Future decisions |
 | Business JSON schema, locking mechanism, Save As behavior and concurrent-workbook policy | Deferred; requires future design and PO approval |
-| Mofid and future broker API contracts, authentication, supported order operations, and permitted usage | Open; architectural direction only in D-026 |
-| Automated order authorization limits, persistence/restart behavior, reconciliation, scheduling precision, credential and audit storage | Deferred; D-026 does not authorize implementation |
+| Mofid and future broker API contracts, authentication, supported order operations, and permitted usage | D-027 accepts investigation of EasyTrader's private web APIs, starting with the desktop client; actual endpoints, authentication flow, terms/permissions and supported operations remain unverified. |
+| Automated order authorization limits, persistence/restart behavior, reconciliation, scheduling precision, credential and audit storage | D-027 scopes a one-order local Console proof of concept with minimum controls; broader automation, scheduling precision, persistence and production security remain deferred. |
 
 ## Technical evidence — not binding API contracts
 
