@@ -12,7 +12,7 @@ The Product Owner has clarified that the intended initial Mofid integration uses
 
 The desktop EasyTrader experience at `d.easytrader.ir` is the preferred starting point for investigation. Whether desktop and mobile clients share the same backend remains unverified.
 
-## Proposed Decision
+## Decision
 
 1. **Integration approach:** Investigate and reproduce the necessary first-party EasyTrader web-client API interactions in a dedicated Mofid adapter. Do not replicate the entire browser interface unless technically necessary.
 
