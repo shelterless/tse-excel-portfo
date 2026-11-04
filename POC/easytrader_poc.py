@@ -12,6 +12,7 @@ Run in VS Code's terminal:
     python POC/easytrader_poc.py --browser-drafts
     python POC/easytrader_poc.py --browser-draft-preview
     python POC/easytrader_poc.py --browser-draft-schedule 08:45:00
+    python POC/easytrader_poc.py --browser-single-order 08:45:00
 Leave credentials below unchanged to enter them interactively with --login.
 Never commit real credentials. Cookies and tokens are held only in memory.
 With --browser-login, use the generated URL in a separate private browser
@@ -35,6 +36,9 @@ The terminal shows the selected details. The final report contains counts only.
 With --browser-draft-schedule HH:MM:SS, enter today's Tehran time before
 sign-in. The POC reads the desktop draft list and previews the whole snapshot
 at the target time without asking for a selection.
+With --browser-single-order [HH:MM:SS], select one draft as a BUY template,
+confirm a local timing rehearsal, and use today's Tehran target (08:45:00 by
+default). Live arming is blocked. Rehearsal timing uses only local clocks.
 
 Evidence from 2026-11-03 (observations, not an authenticated contract test):
 * d.easytrader.ir main-ASDB7OPN.js and chunks CzUVj6D8 / Dgv-m_Jw:
@@ -563,7 +567,7 @@ def read_money(report, access, account_origin, *, compare_browser_token=False):
     check_money_response(status, headers, body)
 
 
-def check_money_response(status, headers, body):
+def parse_buying_power(status, headers, body):
     try:
         account = json_response(status, headers, body)
     except Blocked as exc:
@@ -571,11 +575,16 @@ def check_money_response(status, headers, body):
     buying_power = account.get("buyPowerT2")
     if type(buying_power) not in (int, Decimal) or not Decimal(buying_power).is_finite() or buying_power < 0:
         raise Blocked("Money JSON lacks the expected numeric buyPowerT2 field; account verification incomplete.")
+    return buying_power
+
+
+def check_money_response(status, headers, body):
+    parse_buying_power(status, headers, body)
     print("Authenticated money read returned the expected field. No account values or tokens are printed.")
     print("OMS session readiness and all trading contracts remain unverified; trading remains unavailable.")
 
 
-def observe_draft_reads(context, page, last_read, *, scheduled_at=None):
+def observe_draft_reads(context, page, last_read, *, scheduled_at=None, manual_tab=False):
     def match_drafts(response):
         url = urllib.parse.urlsplit(response.url)
         if response.from_service_worker or url._replace(query="", fragment="").geturl() != DRAFT_URL:
@@ -590,16 +599,16 @@ def observe_draft_reads(context, page, last_read, *, scheduled_at=None):
         return method == "GET" and response.status == 200 and media_type == "application/json"
 
     timeout_ms = BROWSER_READ_TIMEOUT_MS
-    if scheduled_at is None:
+    if scheduled_at is None or manual_tab:
         print("After sign-in, open the Drafts tab in the desktop orders panel if needed.")
-    else:
+    if scheduled_at is not None:
         remaining_ms = int((scheduled_at - datetime.now(tehran_zone())).total_seconds() * 1000)
         if remaining_ms <= 0:
             raise Blocked("Target time passed before the browser could observe drafts.")
         timeout_ms = min(timeout_ms, remaining_ms)
     with context.expect_event("response", predicate=match_drafts, timeout=timeout_ms) as observed:
         page.goto(DESKTOP_ORIGIN + "/", wait_until="commit", timeout=min(30_000, timeout_ms))
-        if scheduled_at is not None:
+        if scheduled_at is not None and not manual_tab:
             page.locator('[data-cy="order-grid-tab-draft-order"]').click(timeout=timeout_ms)
     body = observed.value.body()
     if len(body) > MAX_RESPONSE_BYTES:
@@ -630,13 +639,9 @@ def observe_draft_reads(context, page, last_read, *, scheduled_at=None):
     return payload
 
 
-def preview_draft_selection(payload, report, *, scheduled_at=None):
+def draft_details(payload):
     if not isinstance(payload, list):
         raise Blocked("Expected the observed draft array before previewing a selection.")
-    if not payload:
-        print("No drafts are available to preview.")
-        return
-
     details = []
     draft_ids = set()
     for draft in payload:
@@ -658,7 +663,14 @@ def preview_draft_selection(payload, report, *, scheduled_at=None):
                 or type(side) not in (int, str) or len(str(side)) > 24 or not str(side).isprintable()):
             raise Blocked("Draft details do not match the expected preview fields.")
         details.append(f"{symbol} | Quantity: {quantity} | Unit price: {price} | Side (broker value): {side}")
+    return details
 
+
+def preview_draft_selection(payload, report, *, scheduled_at=None):
+    details = draft_details(payload)
+    if not details:
+        print("No drafts are available to preview.")
+        return
     entry = {"stage": "draft-preview"}
     if scheduled_at is None:
         print("Drafts available for a local preview:")
@@ -696,7 +708,81 @@ def preview_draft_selection(payload, report, *, scheduled_at=None):
     report.append(entry)
 
 
-def observe_browser(report, *, draft_discovery=False, scheduled_at=None):
+def rehearse_single_order(payload, buying_power, scheduled_at, report):
+    if datetime.now(tehran_zone()) >= scheduled_at:
+        raise Blocked("Target time passed before draft selection.")
+    details = draft_details(payload)
+    if not details:
+        raise Blocked("No draft is available for a single-order rehearsal.")
+    for index, detail in enumerate(details, start=1):
+        print(f"  {index}. {detail}")
+    selection = input("One draft number, or Enter to cancel: ").strip()
+    if not selection:
+        print("Single-order rehearsal cancelled.")
+        return
+    if len(selection) > 10 or not selection.isdecimal() or not 1 <= int(selection) <= len(details):
+        raise Blocked("Select exactly one listed draft number.")
+    draft = payload[int(selection) - 1]
+    symbol, quantity, price = draft["symbolName"], draft["quantity"], draft["price"]
+    correction = input(f"BUY quantity [{quantity}]. Enter keeps the draft quantity: ").strip()
+    if correction:
+        if len(correction) > 10 or not correction.isdecimal() or int(correction) <= 0:
+            raise Blocked("Quantity must be a positive whole number of up to 10 digits.")
+        quantity = int(correction)
+
+    # Draft price units still require verification. Apply the IRR cap locally
+    # under the rehearsal assumption that the draft price is in IRR.
+    if price > MAX_ORDER_VALUE_IRR:
+        raise Blocked("Order notional exceeds MAX_ORDER_VALUE_IRR under the rehearsal's draft-price assumption.")
+    if price != int(price):
+        raise Blocked("A whole-number draft price is required for the local IRR cap check.")
+    price = int(price)
+    notional = validate_order(symbol, quantity, price, MAX_ORDER_VALUE_IRR)
+    print(f"Local BUY intent: {symbol} | Quantity: {quantity} | Draft price: {price} | "
+          f"Notional: {notional} (assuming draft price is in IRR for the local cap).")
+    print("Today's verified upper price is unavailable. The rehearsal keeps the draft price.")
+    if buying_power is None:
+        print("No valid money snapshot was observed alongside the draft read.")
+    else:
+        print("A numeric buying-power field was observed. Its units and applicable fees remain unverified.")
+    print("Warning: Broker clock unverified. Offset and uncertainty are unavailable.")
+    print("Live arming blocked. Instrument rules, funds including fees, broker time, "
+          "and the order and status contracts require verification.")
+    entry = {
+        "stage": "single-order-rehearsal",
+        "selected_count": 1,
+        "target_time": scheduled_at.isoformat(),
+        "funds_check": "UNVERIFIED",
+        "broker_clock": {"status": "UNVERIFIED", "offset_ns": None, "uncertainty_ns": None},
+        "live_armed": False,
+    }
+    report.append(entry)
+    if buying_power == 0:
+        entry["funds_check"] = "ZERO_REPORTED"
+        raise Blocked("The observed buying-power field was zero.")
+
+    if datetime.now(tehran_zone()) >= scheduled_at:
+        raise Blocked("Target time passed before the rehearsal could be confirmed.")
+    if input(f"Type REHEARSE to time this local BUY preview at {scheduled_at.isoformat()}: ").strip() != "REHEARSE":
+        print("Single-order rehearsal cancelled.")
+        return
+    target_ns = int(scheduled_at.timestamp()) * 1_000_000_000
+    started_ns = time.time_ns()
+    started_counter_ns = time.perf_counter_ns()
+    if started_ns >= target_ns:
+        raise Blocked("Target time passed before confirmation completed.")
+    delay_ns = target_ns - started_ns
+    elapsed_ns = time.perf_counter_ns() - started_counter_ns
+    while elapsed_ns < delay_ns:
+        time.sleep(min((delay_ns - elapsed_ns) / 1_000_000_000, 60))
+        elapsed_ns = time.perf_counter_ns() - started_counter_ns
+    preview_ns = time.time_ns()
+    entry.update(local_target_unix_ns=target_ns, local_start_unix_ns=started_ns, local_preview_unix_ns=preview_ns,
+                 elapsed_monotonic_ns=elapsed_ns, local_target_delta_ns=preview_ns - target_ns)
+    print(f"Dry-run BUY preview: {symbol} | Quantity: {quantity} | Draft price: {price}.")
+
+
+def observe_browser(report, *, draft_discovery=False, scheduled_at=None, single_order=False):
     require_read_only_mode()
     try:
         from playwright.sync_api import Error, TimeoutError as BrowserTimeout, sync_playwright
@@ -704,6 +790,7 @@ def observe_browser(report, *, draft_discovery=False, scheduled_at=None):
         raise Blocked("Browser read requires Playwright. Run: python -m pip install playwright") from None
 
     last_read = {}
+    money_read = {}
 
     def match_money(response):
         if response.request.method != "GET" or response.from_service_worker:
@@ -713,13 +800,26 @@ def observe_browser(report, *, draft_discovery=False, scheduled_at=None):
             return False
         content_type = response.headers.get("content-type", "")
         media_type = content_type.split(";", 1)[0].strip().lower()
-        last_read.update(
+        money_read.update(
             stage="browser-account-read",
             response_arrival=datetime.now(tehran_zone()).isoformat(timespec="milliseconds"),
             http_status=response.status,
             response_kind={"application/json": "json", "text/html": "html"}.get(media_type, "other"),
         )
         return response.status == 200 and media_type == "application/json"
+
+    money_snapshot = None
+
+    def capture_money(response):
+        nonlocal money_snapshot
+        if money_snapshot is None and match_money(response):
+            money_snapshot = response
+
+    def money_response(response):
+        body = response.body()
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise Blocked("Browser money response exceeded the size limit.")
+        return response.status, {"Content-Type": response.headers.get("content-type", "")}, body
 
     try:
         with sync_playwright() as playwright:
@@ -728,24 +828,31 @@ def observe_browser(report, *, draft_discovery=False, scheduled_at=None):
                 context = browser.new_context()
                 page = context.new_page()
                 print("Sign in manually in the Chrome window. Complete any Authenticator challenge there.")
+                if single_order:
+                    context.on("response", capture_money)
+                    payload = observe_draft_reads(context, page, last_read, scheduled_at=scheduled_at, manual_tab=True)
+                    buying_power = None
+                    if money_snapshot is not None:
+                        try:
+                            buying_power = parse_buying_power(*money_response(money_snapshot))
+                        except (Blocked, Error, RecursionError):
+                            money_read["money_field"] = "UNVERIFIED"
+                        else:
+                            money_read["money_field"] = "NUMERIC"
+                    return payload, buying_power
                 if draft_discovery:
                     return observe_draft_reads(context, page, last_read, scheduled_at=scheduled_at)
                 print("Waiting up to five minutes for the mobile site's own money response.")
                 with context.expect_event("response", predicate=match_money, timeout=BROWSER_READ_TIMEOUT_MS) as observed:
                     page.goto(MOBILE_ORIGIN + "/market-watch", wait_until="commit", timeout=30_000)
-                response = observed.value
-                body = response.body()
-                if len(body) > MAX_RESPONSE_BYTES:
-                    raise Blocked("Browser money response exceeded the size limit.")
-                headers = {"Content-Type": response.headers.get("content-type", "")}
-                check_money_response(response.status, headers, body)
+                check_money_response(*money_response(observed.value))
             finally:
                 if browser.is_connected():
                     browser.close()
     except BrowserTimeout:
-        if draft_discovery:
+        if draft_discovery or single_order:
             raise Blocked("Timed out waiting for a draft GET with HTTP 200 JSON. See the sanitized report.") from None
-        if last_read:
+        if money_read:
             raise Blocked("Timed out waiting for HTTP 200 JSON from the browser money request.") from None
         raise Blocked("Timed out before a browser money response was observed.") from None
     except Error:
@@ -753,6 +860,8 @@ def observe_browser(report, *, draft_discovery=False, scheduled_at=None):
     finally:
         if last_read:
             report.append(last_read)
+        if money_read:
+            report.append(money_read)
 
 
 def authenticate_and_check(report, *, browser_redirect=None, open_chrome=False, compare_browser_token=False):
@@ -813,13 +922,15 @@ def main(args=None):
     token_origin = token_origins.get(tuple(args))
     draft_preview = args == ["--browser-draft-preview"]
     draft_schedule = len(args) == 2 and args[0] == "--browser-draft-schedule"
+    single_order = len(args) in (1, 2) and args[0] == "--browser-single-order"
     draft_send = args[:1] == ["--browser-draft-send"]
     browser_observation = args in (["--browser-read"], ["--browser-drafts"]) or draft_preview or draft_schedule
-    if args and args != ["--login"] and browser_redirect is None and token_origin is None and not browser_observation and not draft_send:
+    if (args and args != ["--login"] and browser_redirect is None and token_origin is None
+            and not browser_observation and not single_order and not draft_send):
         print("Usage: python POC/easytrader_poc.py "
               "[--self-test | --login | --browser-login [--mobile] [--open-chrome] "
               "[--compare-browser-token] | --browser-token [--mobile] | --browser-read | --browser-drafts "
-              "| --browser-draft-preview | --browser-draft-schedule HH:MM:SS]")
+              "| --browser-draft-preview | --browser-draft-schedule HH:MM:SS | --browser-single-order [HH:MM:SS]]")
         return 2
     report = []
     try:
@@ -827,7 +938,13 @@ def main(args=None):
         if draft_send:
             raise Blocked("Direct group send is disabled until the EasyTrader API contract is verified.")
         print("Read-only POC mode.")
-        if draft_schedule:
+        if single_order:
+            target = args[1] if len(args) == 2 else TARGET_TIME
+            scheduled_at = tehran_target(datetime.now(tehran_zone()), target)
+            print(f"Single-order rehearsal target: {scheduled_at.isoformat()}.")
+            payload, buying_power = observe_browser(report, scheduled_at=scheduled_at, single_order=True)
+            rehearse_single_order(payload, buying_power, scheduled_at, report)
+        elif draft_schedule:
             scheduled_at = tehran_target(datetime.now(tehran_zone()), args[1])
             print(f"Scheduled draft rehearsal for {scheduled_at.isoformat()}.")
             payload = observe_browser(report, draft_discovery=True, scheduled_at=scheduled_at)
@@ -1187,6 +1304,186 @@ def self_test():
                     else:
                         sleep.assert_not_called()
                         self.assertEqual(report["requests"], [])
+
+        def test_single_order_rehearses_only_one_corrected_buy_at_the_default_target(self):
+            first = {"id": "fixture-id-one", "symbolName": "FIXTURE ONE", "quantity": 10, "price": 100, "side": 0}
+            second = {**first, "id": "fixture-id-two", "symbolName": "FIXTURE TWO", "side": 1}
+            ready = datetime.fromisoformat("2026-11-04T08:44:59+03:30")
+            target = datetime.fromisoformat("2026-11-04T08:45:00+03:30")
+            target_ns = int(target.timestamp()) * 1_000_000_000
+            output = io.StringIO()
+            with patch(__name__ + ".datetime", wraps=datetime) as clock, \
+                 patch(__name__ + ".observe_browser", return_value=([first, second], 731953)) as observe, \
+                 patch("builtins.input", side_effect=["۲", "۳", "REHEARSE"]) as prompt, \
+                 patch("time.time_ns", side_effect=[target_ns - 10_000_000, target_ns + 500_000]), \
+                 patch("time.perf_counter_ns", side_effect=[100_000_000, 100_000_000, 105_000_000, 110_500_000]), \
+                 patch("time.sleep") as sleep, contextlib.redirect_stdout(output):
+                clock.now.return_value = ready
+                self.assertEqual(main(["--browser-single-order"]), 0)
+            observe.assert_called_once()
+            self.assertEqual(observe.call_args.kwargs, {"scheduled_at": target, "single_order": True})
+            self.assertEqual(prompt.call_count, 3)
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.01, 0.005])
+            preview_lines = [line for line in output.getvalue().splitlines() if line.startswith("Dry-run BUY preview:")]
+            self.assertEqual(preview_lines, ["Dry-run BUY preview: FIXTURE TWO | Quantity: 3 | Draft price: 100."])
+            report = json.loads(output.getvalue().splitlines()[-1])
+            self.assertEqual(report["order_requests"], 0)
+            self.assertIsNone(report["order_id"])
+            self.assertIsNone(report["broker_order_response"])
+            self.assertEqual((report["acceptance"], report["execution"]), ("NOT_ATTEMPTED", "NOT_ATTEMPTED"))
+            self.assertEqual(len(report["requests"]), 1)
+            rehearsal = report["requests"][0]
+            self.assertEqual(rehearsal["selected_count"], 1)
+            self.assertFalse(rehearsal["live_armed"])
+            self.assertEqual(rehearsal["funds_check"], "UNVERIFIED")
+            self.assertEqual(rehearsal["broker_clock"],
+                             {"status": "UNVERIFIED", "offset_ns": None, "uncertainty_ns": None})
+            self.assertEqual(rehearsal["local_start_unix_ns"], target_ns - 10_000_000)
+            self.assertEqual(rehearsal["local_preview_unix_ns"], target_ns + 500_000)
+            self.assertEqual(rehearsal["local_target_delta_ns"], 500_000)
+            self.assertEqual(rehearsal["elapsed_monotonic_ns"], 10_500_000)
+            self.assertNotIn("731953", output.getvalue())
+            self.assertNotIn("fixture-id", output.getvalue())
+            self.assertNotIn("FIXTURE TWO", output.getvalue().splitlines()[-1])
+
+        def test_single_order_rejects_invalid_selection_cap_and_zero_funds(self):
+            draft = {"id": "fixture-id", "symbolName": "TEST", "quantity": 1, "price": 100, "side": 0}
+            ready = datetime.fromisoformat("2026-11-04T08:44:59+03:30")
+            target = tehran_target(ready, "08:45:00")
+            for drafts, funds, answers, diagnostic in (
+                ([], None, [], "No draft"),
+                ([draft, draft], None, [], "identifiers"),
+                ([draft], None, ["1,1"], "exactly one"),
+                ([draft], None, ["1,2"], "exactly one"),
+                ([draft], None, ["2"], "exactly one"),
+                ([draft], None, ["1", "0"], "positive whole number"),
+                ([draft], None, ["1", "50001"], "exceeds MAX_ORDER_VALUE_IRR"),
+                ([{**draft, "price": Decimal("1.5")}], None, ["1", ""], "whole-number draft price"),
+                ([draft], 0, ["1", ""], "buying-power field was zero"),
+            ):
+                with self.subTest(answers=answers, diagnostic=diagnostic), \
+                     patch(__name__ + ".datetime", wraps=datetime) as clock, \
+                     patch("builtins.input", side_effect=answers), patch("time.sleep") as sleep, \
+                     contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(Blocked, diagnostic):
+                    clock.now.return_value = ready
+                    rehearse_single_order(drafts, funds, target, [])
+                sleep.assert_not_called()
+
+        def test_single_order_cancellation_expiry_and_live_toggle_do_not_wait(self):
+            draft = {"id": "fixture-id", "symbolName": "TEST", "quantity": 1, "price": 100, "side": 0}
+            ready = datetime.fromisoformat("2026-11-04T12:19:59+03:30")
+            target = tehran_target(ready, "12:20:00")
+            late = datetime.fromisoformat("2026-11-04T12:20:01+03:30")
+            args = ["--browser-single-order", "12:20:00"]
+            for timestamps, answers, enable_live, exit_code, observe_count in (
+                ([ready, ready, ready], ["1", "", "ARM"], False, 0, 1),
+                ([ready, ready, ready], ["1", "", "REHEARSE"], False, 2, 1),
+                ([ready, ready, late], ["1", ""], False, 2, 1),
+                ([ready, late], [], False, 2, 1),
+                ([late], [], False, 2, 0),
+                ([], [], True, 2, 0),
+            ):
+                with self.subTest(timestamps=timestamps, answers=answers, enable_live=enable_live):
+                    output = io.StringIO()
+                    with patch(__name__ + ".datetime", wraps=datetime) as clock, \
+                         patch(__name__ + ".LIVE_ORDER_ENABLED", enable_live), \
+                         patch(__name__ + ".observe_browser", return_value=([draft], None)) as observe, \
+                         patch("builtins.input", side_effect=answers) as prompt, \
+                         patch("time.time_ns", return_value=int(target.timestamp()) * 1_000_000_000), \
+                         patch("time.sleep") as sleep, contextlib.redirect_stdout(output):
+                        clock.now.side_effect = timestamps
+                        self.assertEqual(main(args), exit_code)
+                    self.assertEqual(observe.call_count, observe_count)
+                    self.assertEqual(prompt.call_count, len(answers))
+                    sleep.assert_not_called()
+                    self.assertNotIn("Dry-run BUY preview:", output.getvalue())
+                    self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["order_requests"], 0)
+
+        def test_single_order_browser_observes_each_read_once_and_ignores_order_responses(self):
+            def response(url, body, method="GET", status=200):
+                item = Mock(url=url, status=status, from_service_worker=False, headers={"content-type": "application/json"})
+                item.request.method = method
+                item.body.return_value = body
+                return item
+
+            drafts = response(DRAFT_URL, b'[{"id":"fixture-id","symbolName":"TEST","quantity":1,"price":100,"side":0}]')
+            duplicate = response(DRAFT_URL, b'[]')
+            order_url = ACCOUNT_API_ORIGIN + "/core/api/v2/order"
+            orders = [response(order_url, b'{"message":"fixture-private","orderId":"fixture-order"}', "POST", status)
+                      for status in (200, 400, 429, 503)]
+            unrelated = response("https://example.com/easy/api/money", b'{"buyPowerT2":1}')
+            for money_body, expected_power, expected_field in (
+                (b'{"buyPowerT2":731953}', 731953, "NUMERIC"),
+                (b'{"buyPowerT2":"fixture-private"}', None, "UNVERIFIED"),
+                (None, None, None),
+            ):
+                with self.subTest(money_body=money_body):
+                    drafts.reset_mock()
+                    api = MagicMock(Error=RuntimeError, TimeoutError=TimeoutError)
+                    playwright = api.sync_playwright.return_value.__enter__.return_value
+                    browser = playwright.chromium.launch.return_value
+                    context = browser.new_context.return_value
+                    page = context.new_page.return_value
+                    money = response(MONEY_URL, money_body)
+                    later_money = response(MONEY_URL, b'{"buyPowerT2":20}')
+                    context.expect_event.return_value.__enter__.return_value.value = drafts
+
+                    def navigate(*args, **kwargs):
+                        capture = context.on.call_args.args[1]
+                        predicate = context.expect_event.call_args.kwargs["predicate"]
+                        for item in [unrelated, *orders]:
+                            capture(item)
+                            self.assertFalse(predicate(item))
+                        if money_body is not None:
+                            capture(money)
+                            capture(later_money)
+                        self.assertTrue(predicate(drafts))
+                        capture(duplicate)
+
+                    page.goto.side_effect = navigate
+                    output, report = io.StringIO(), []
+                    with patch.dict(sys.modules, {"playwright.sync_api": api}), contextlib.redirect_stdout(output):
+                        payload, power = observe_browser(report, single_order=True)
+                    self.assertEqual(payload[0]["id"], "fixture-id")
+                    self.assertEqual(power, expected_power)
+                    drafts.body.assert_called_once_with()
+                    self.assertEqual(money.body.call_count, int(money_body is not None))
+                    for item in [unrelated, later_money, duplicate, *orders]:
+                        item.body.assert_not_called()
+                    context.expect_event.assert_called_once()
+                    page.goto.assert_called_once()
+                    page.locator.assert_not_called()
+                    browser.close.assert_called_once()
+                    if expected_field is not None:
+                        self.assertEqual(report[-1]["money_field"], expected_field)
+                    else:
+                        self.assertEqual(len(report), 1)
+                    for private in ("fixture-private", "fixture-order", "731953"):
+                        self.assertNotIn(private, output.getvalue() + json.dumps(report))
+
+        def test_single_order_browser_timeout_does_not_repeat_observation(self):
+            api = MagicMock(Error=RuntimeError, TimeoutError=TimeoutError)
+            playwright = api.sync_playwright.return_value.__enter__.return_value
+            browser = playwright.chromium.launch.return_value
+            context = browser.new_context.return_value
+            context.expect_event.return_value.__exit__.side_effect = TimeoutError("fixture-private")
+            ready = datetime.fromisoformat("2026-11-04T08:44:00+03:30")
+            output = io.StringIO()
+            with patch.dict(sys.modules, {"playwright.sync_api": api}), \
+                 patch(__name__ + ".datetime", wraps=datetime) as clock, \
+                 patch("builtins.input") as prompt, patch("time.sleep") as sleep, \
+                 contextlib.redirect_stdout(output):
+                clock.now.return_value = ready
+                self.assertEqual(main(["--browser-single-order"]), 2)
+            playwright.chromium.launch.assert_called_once()
+            context.expect_event.assert_called_once()
+            context.new_page.return_value.goto.assert_called_once()
+            browser.close.assert_called_once()
+            prompt.assert_not_called()
+            sleep.assert_not_called()
+            self.assertIn("Timed out waiting for a draft GET", output.getvalue())
+            self.assertNotIn("fixture-private", output.getvalue())
+            self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["order_requests"], 0)
 
         def test_redirect_does_not_replay_password(self):
             responses = [(302, {"Location": "/next"}, b""), (200, {"Content-Type": "text/html"}, b"form")]
