@@ -2,6 +2,13 @@
 
 > This file describes **approved documentation changes**, not source-code releases.
 
+## 2026-11-03 — EasyTrader web API strategy and local trading experiment
+
+- Accepted D-027: investigate the private web APIs behind EasyTrader, starting with the desktop client, for future Mofid integration without assuming officially published API access.
+- Prioritized a minimal local C# Console proof of concept for legitimate authentication, one preauthorized limited real order, reconciliation and timing measurements before Excel trading integration.
+- Preserved D-025/D-026 architecture and execution safeguards; API details, permissions and production security remain unverified or deferred.
+- Updated the decision index and open-questions summary without rewriting earlier decisions.
+
 ## 2026-10-28 — Architecture and future trading decisions
 
 - Accepted D-025: four-project modular monolith, feature-first organization, dependency boundaries, short physical project names and `TseExcel.`-qualified assemblies/namespaces.
