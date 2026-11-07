@@ -1,6 +1,6 @@
 # TSE Excel — Decision Index
 
-This folder contains independently maintained decision records. Read only those relevant to the current task, rather than all ADR bodies. The [historical decision log](HISTORICAL-DECISIONS.md) preserves the entire original D-001 through D-021 file **verbatim**, including originally recorded statuses. Open questions and legacy technical evidence remain in [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).
+This folder contains independently maintained decision records. Read only those relevant to the current task, rather than all ADR bodies. The [historical decision log](HISTORICAL-DECISIONS.md) preserves the entire original D-001 through D-021 file verbatim, including originally recorded statuses. Open questions and legacy technical evidence remain in [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).
 
 A decision's original statement remains historically intact. Superseded records are retained; only the currently accepted superseding decision governs new work. Do not invent historical approval dates or rationale.
 
@@ -31,7 +31,12 @@ A decision's original statement remains historically intact. Superseded records 
 | D-023 | GUI-First Local Development Workflow | Accepted | [0023-gui-first-local-development.md](0023-gui-first-local-development.md) |
 | D-024 | Future Automated Release and User-Initiated Update | Accepted as deferred future direction | [0024-future-release-and-update.md](0024-future-release-and-update.md) |
 | D-025 | Four-Project Modular Architecture and Feature-First Organization | Accepted | [0025-four-project-feature-first-architecture.md](0025-four-project-feature-first-architecture.md) |
-| D-026 | Extensible Broker Integration and Excel-Hosted Order Execution | Accepted; implementation deferred | [0026-extensible-brokers-excel-hosted-trading.md](0026-extensible-brokers-excel-hosted-trading.md) |
-| D-027 | EasyTrader Web API Integration and Local Trading Proof of Concept | Accepted; implementation pending | [0027-easytrader-web-api-local-trading-poc.md](0027-easytrader-web-api-local-trading-poc.md) |
+| D-026 | Extensible Broker Integration and Excel-Hosted Order Execution | Accepted; broader implementation deferred | [0026-extensible-brokers-excel-hosted-trading.md](0026-extensible-brokers-excel-hosted-trading.md) |
+| D-027 | EasyTrader Web API Integration and Local Trading Proof of Concept | Accepted; partially superseded by D-028 for the Excel-hosted opening-order POC | [0027-easytrader-web-api-local-trading-poc.md](0027-easytrader-web-api-local-trading-poc.md) |
+| D-028 | Excel-Hosted Mofid Opening-Order Proof of Concept | Accepted; implementation pending | [0028-excel-hosted-mofid-opening-order-poc.md](0028-excel-hosted-mofid-opening-order-poc.md) |
+
+### D-027 / D-028 relationship
+
+D-028 governs the specific Excel-hosted opening-order POC and supersedes only the conflicting D-027 Console-first/single-order sequencing for that bounded task. D-027's API uncertainty, authentication integrity, credential protection and broker-authorization caveats remain in force. D-026 remains the broader deferred broker/trading direction.
 
 Future material decisions require PO approval before implementation. Use new numbered ADRs and explicit supersession when warranted.

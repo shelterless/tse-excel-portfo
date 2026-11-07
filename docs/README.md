@@ -5,14 +5,16 @@
 | Task | Load when needed |
 |---|---|
 | ChatGPT bootstrap | `gpt/PROJECT-INSTRUCTIONS.md` (paste into Project Instructions only) |
-| Product context and prototype scope | `project/PROJECT-CONTEXT.md` |
+| Product context and approved milestone scope | `project/PROJECT-CONTEXT.md`; relevant accepted ADR |
 | Roles, authority, change approval | `project/OPERATING-CONTRACT.md`, `project/GOVERNANCE.md` |
 | PO/Codex handoff and local workflow | `project/DEVELOPMENT-WORKFLOW.md`, `engineering/CODEX-HANDOFF.md` |
 | Coding and testing | `engineering/ENGINEERING-STANDARDS.md`, affected code/tests |
-| Architecture | `engineering/ARCHITECTURE.md`, applicable decision records |
+| Architecture and folder/dependency rules | `engineering/ARCHITECTURE.md`, applicable decision records |
+| Mofid opening-order POC | `decisions/0028-excel-hosted-mofid-opening-order-poc.md`, `project/PRODUCT-BACKLOG.md`, `engineering/ARCHITECTURE.md` |
+| Deferred trading enhancements | `project/PRODUCT-BACKLOG.md` |
 | Workbook structure and formulas | `contracts/WORKBOOK-CONTRACT.md` |
 | TSETMC reliability and errors | `contracts/DATA-RELIABILITY.md` |
-| Decisions and unresolved matters | `decisions/README.md` -> only relevant accepted ADRs; `decisions/OPEN-QUESTIONS.md` when necessary |
+| Decisions and unresolved matters | `decisions/README.md` → only relevant accepted ADRs; `decisions/OPEN-QUESTIONS.md` when necessary |
 | Documentation revision history | `CHANGELOG.md` |
 
 **Authority:** Newer explicit PO decisions > verified current `main` approved records > verified source/test evidence > historical/cached context. Material contradictions require PO clarification. Source is read-only to ChatGPT; only the PO commits source after testing. ChatGPT commits only PO-approved documentation to `main`. Codex never commits source in this repository.
