@@ -78,18 +78,18 @@ The workflow has six sequential stages.
 - Display drafts in a separate selection window.
 - Select a draft by clicking its actual row; do not require manual identifier entry.
 - Support vertical scrolling for long draft lists.
-- Show symbol, instrument name, side, quantity and unit price.
+- Show symbol, side, quantity and unit price.
 - Select exactly one draft for each execution workflow.
 - Treat the selected draft as read-only input.
 - Never edit, delete or submit the source draft itself.
 
 ### Stage 2 — Order details
 
-Display a compact order-entry form inspired by the first EasyTrader reference screenshot. Identify the selected instrument in the form title.
+Display a compact order-entry form inspired by the first EasyTrader reference screenshot. Identify the selected symbol in the form title.
 
 Show:
 
-- Instrument name and symbol.
+- Symbol.
 - BUY or SELL direction inherited from the selected draft.
 - Quantity.
 - Unit price.
@@ -129,7 +129,7 @@ Provide editable inputs for:
 - Start minute.
 - Start second.
 - Dispatch duration in seconds.
-- Minimum dispatch interval in microseconds.
+- Minimum dispatch interval in milliseconds.
 
 Use these defaults:
 
@@ -137,9 +137,11 @@ Use these defaults:
 |---|---:|
 | Start time | 08:44:58 |
 | Duration | 5 seconds |
-| Minimum interval | 350 microseconds |
+| Minimum interval | 350 milliseconds |
 
 Use the local Windows system clock. Do not require the user to enter Tehran time or manually synchronize another clock.
+
+Use milliseconds for the configured interval (`340` means `340 ms`), and calculate the theoretical estimate as `Ceiling(durationSeconds × 1000 / intervalMilliseconds)`. The dispatch window end is exclusive.
 
 Show an approximate dispatch-attempt estimate derived from the configured duration and minimum interval. Label it clearly as an estimate. It is not a promise of throughput and must never be presented as the number of broker-accepted orders.
 
@@ -147,7 +149,7 @@ Show an approximate dispatch-attempt estimate derived from the configured durati
 
 Before dispatch, show a concise confirmation summary containing:
 
-- Instrument.
+- Symbol.
 - BUY/SELL direction.
 - Quantity.
 - Unit price.
@@ -197,13 +199,13 @@ The log must:
 Example:
 
 ```text
-08:44:58.000124 | #000001
-08:44:58.000482 | #000002
-08:44:58.000831 | #000003
-08:44:58.001176 | #000004
+08:44:58.000 | #000001
+08:44:58.350 | #000002
+08:44:58.700 | #000003
+08:44:59.050 | #000004
 ```
 
-The timestamp must represent the local dispatch event, not the time at which the UI happens to render the record.
+The timestamp must represent the local dispatch event, not the time at which the UI happens to render the record. Display it with millisecond precision (`HH:mm:ss.fff`).
 
 The dispatch engine owns attempt numbers, timestamps and log records. The UI is a presentation consumer only. Collect records independently and update the UI in batches. Rendering, scrolling and text formatting must not throttle the dispatch schedule. Do not create one UI control per attempt.
 
@@ -314,7 +316,7 @@ The PO performs the final local Excel and live-account acceptance separately.
 
 - EasyTrader web APIs are private and undocumented; observed contracts may change.
 - This decision does not establish Mofid's authorization of third-party API use or resolve applicable terms, legal or regulatory restrictions.
-- Windows scheduling, operating-system load, network latency and broker processing cannot guarantee microsecond delivery, exact throughput or queue priority.
+- Windows scheduling, operating-system load, network latency and broker processing cannot guarantee exact millisecond timing, throughput or queue priority.
 - Multiple independent requests may be accepted or executed and may create material financial exposure.
 - Cancelling the local dispatch engine does not cancel broker-side orders.
 - Do not expose credentials, account details, session tokens or private order data in repository fixtures or logs.
