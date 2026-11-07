@@ -56,13 +56,14 @@ public sealed class MofidOpeningOrderBroker : IOpeningOrderBroker
         JsonElement all = await browser.ReadAsync(MofidRead.Symbols, null, cancellationToken).ConfigureAwait(false);
         JsonElement symbol = Match(Required(all, "symbols"), draft.SymbolIsin);
         if (Text(symbol, "symbolName") != draft.SymbolName) throw Invalid();
-        return Fees(symbol);
+        try { return Fees(symbol); }
+        catch (OpeningOrderException error) { throw error.AtStage(OpeningOrderStage.SymbolMetadata); }
     }
 
     private static InstrumentFees Fees(JsonElement symbol)
     {
         decimal rate = Number(symbol, "buyCommission", allowString: true);
-        if (rate >= 1) throw InvalidNumber();
+        if (rate >= 1) throw InvalidNumber("buyCommission", NumericIssue.OutOfRange);
         bool hasSize = symbol.TryGetProperty("csize", out JsonElement size);
         return new(rate, Number(symbol, "hidePrice", allowString: true), !hasSize || size.ValueKind == JsonValueKind.Null ? null : Number(symbol, "csize", true, allowString: true));
     }
@@ -70,49 +71,79 @@ public sealed class MofidOpeningOrderBroker : IOpeningOrderBroker
     public async Task ValidateAsync(OpeningDraft draft, OrderTerms order, DispatchSettings settings, CancellationToken cancellationToken)
     {
         validatedOrder = null;
-        if (draft.Side != OrderSide.Buy || order.Side != OrderSide.Buy || draft.ValidityType != 0 || draft.SymbolIsin != order.SymbolIsin)
-            throw new OpeningOrderException("Only a matching ordinary DAY BUY is enabled.");
-        await browser.AuthenticateAsync(false, cancellationToken).ConfigureAwait(false);
-        long started = time.GetTimestamp();
-        JsonElement all = await browser.ReadAsync(MofidRead.Symbols, null, cancellationToken).ConfigureAwait(false);
-        JsonElement symbol = Match(Required(all, "symbols"), draft.SymbolIsin);
-        if (Fees(symbol).CreateOrder(draft, order.Quantity, order.UnitPriceIrr) != order) throw new OpeningOrderException("Financial metadata changed after confirmation.");
-        if (Required(symbol, "isActive").ValueKind != JsonValueKind.True || Required(symbol, "canBuy").ValueKind != JsonValueKind.True) throw Invalid();
-        int unit = checked((int)Integer(symbol, "marketUnit", true));
-        if (!OrdinaryUnits.Contains(unit) || Text(symbol, "symbolName") != order.SymbolName) throw Invalid();
-        JsonElement market = Match(await browser.ReadAsync(MofidRead.Market, draft.SymbolIsin, cancellationToken).ConfigureAwait(false), draft.SymbolIsin);
-        string state = Required(market, "stateCode").ToString();
-        if (state is not ("A" or "65")) throw new OpeningOrderException("The instrument is halted, restricted or unknown.");
-        decimal low = Number(market, "lowAllowedPrice"), high = Number(market, "highAllowedPrice", true);
-        decimal tick = Number(symbol, "minDealablePrice", true);
-        long step = Integer(symbol, "minDealableCount", true);
-        long minimum = Integer(symbol, "minValidBuyVolume", true), maximum = Integer(symbol, "maxValidBuyVolume", true);
-        if (market.TryGetProperty("minValidBuyVolume", out _)) minimum = Math.Max(minimum, Integer(market, "minValidBuyVolume", true));
-        if (market.TryGetProperty("maxValidBuyVolume", out _)) maximum = Math.Min(maximum, Integer(market, "maxValidBuyVolume", true));
-        if (low > high || order.UnitPriceIrr < low || order.UnitPriceIrr > high || order.UnitPriceIrr % tick != 0 ||
-            minimum > maximum || order.Quantity < minimum || order.Quantity > maximum || order.Quantity % step != 0) throw Invalid();
-        decimal minimumNotional = EtfUnits.Contains(unit) ? 1_000_000m : BaseUnits.Contains(unit) ? 50_000_000m : 5_000_000m;
-        JsonElement money = await browser.ReadAsync(MofidRead.Money, null, cancellationToken).ConfigureAwait(false);
-        if (checked(order.Quantity * (order.UnitPriceIrr + order.HiddenPriceIrr)) < minimumNotional ||
-            order.TotalIrr > MaximumOrderValueIrr || order.TotalIrr > Number(money, "buyPowerT2"))
-            throw new OpeningOrderException("Order value fails the verified notional, safety cap or buying-power check.");
-        JsonElement calendar = await browser.ReadAsync(MofidRead.Calendar, null, cancellationToken).ConfigureAwait(false);
-        JsonElement session = await browser.ReadAsync(MofidRead.Session, null, cancellationToken).ConfigureAwait(false);
-        ValidateCalendar(symbol, calendar, session, settings);
-        TimeSpan freshness = time.GetElapsedTime(started) + (settings.Start - time.GetLocalNow()) + settings.Duration;
-        if (freshness > TimeSpan.FromSeconds(15) || time.GetLocalNow() >= settings.Start) throw new OpeningOrderException("Preflight data is stale for the requested window.");
-        validatedOrder = order;
-        validatedAt = started;
-        validatedCutoff = settings.Start + settings.Duration;
+        OpeningOrderStage stage = OpeningOrderStage.Authentication;
+        try
+        {
+            if (draft.Side != OrderSide.Buy || order.Side != OrderSide.Buy || draft.ValidityType != 0 || draft.SymbolIsin != order.SymbolIsin)
+                throw new OpeningOrderException("Only a matching ordinary DAY BUY is enabled.");
+            await browser.AuthenticateAsync(false, cancellationToken).ConfigureAwait(false);
+            long started = time.GetTimestamp();
+            stage = OpeningOrderStage.SymbolMetadata;
+            JsonElement all = await browser.ReadAsync(MofidRead.Symbols, null, cancellationToken).ConfigureAwait(false);
+            JsonElement symbol = Match(Required(all, "symbols"), draft.SymbolIsin);
+            if (Fees(symbol).CreateOrder(draft, order.Quantity, order.UnitPriceIrr) != order)
+                throw new OpeningOrderException("Financial metadata changed after confirmation.", OpeningOrderError.MetadataChanged);
+            if (Required(symbol, "isActive").ValueKind != JsonValueKind.True || Required(symbol, "canBuy").ValueKind != JsonValueKind.True)
+                throw new OpeningOrderException("The instrument is not explicitly active and buyable.", OpeningOrderError.MarketUnavailable);
+            int unit = checked((int)Integer(symbol, "marketUnit", true));
+            if (!OrdinaryUnits.Contains(unit) || Text(symbol, "symbolName") != order.SymbolName) throw Invalid();
+            // These financial fields share the reference's exact numeric-token/plain-decimal-string contract.
+            decimal tick = Number(symbol, "minDealablePrice", true, allowString: true);
+            long step = Integer(symbol, "minDealableCount", true, allowString: true);
+            long minimum = Integer(symbol, "minValidBuyVolume", true, allowString: true), maximum = Integer(symbol, "maxValidBuyVolume", true, allowString: true);
+            stage = OpeningOrderStage.MarketData;
+            JsonElement market = Match(await browser.ReadAsync(MofidRead.Market, draft.SymbolIsin, cancellationToken).ConfigureAwait(false), draft.SymbolIsin);
+            string state = Required(market, "stateCode").ToString();
+            if (state is not ("A" or "65")) throw new OpeningOrderException("The instrument is halted, restricted or unknown.", OpeningOrderError.MarketUnavailable);
+            decimal low = Number(market, "lowAllowedPrice", allowString: true), high = Number(market, "highAllowedPrice", true, allowString: true);
+            if (market.TryGetProperty("minValidBuyVolume", out _)) minimum = Math.Max(minimum, Integer(market, "minValidBuyVolume", true, allowString: true));
+            if (market.TryGetProperty("maxValidBuyVolume", out _)) maximum = Math.Min(maximum, Integer(market, "maxValidBuyVolume", true, allowString: true));
+            if (low > high || order.UnitPriceIrr < low || order.UnitPriceIrr > high || order.UnitPriceIrr % tick != 0 ||
+                minimum > maximum || order.Quantity < minimum || order.Quantity > maximum || order.Quantity % step != 0)
+                throw new OpeningOrderException("Order terms violate the verified price or quantity constraints.", OpeningOrderError.InvalidOrderConstraints);
+            decimal minimumNotional = EtfUnits.Contains(unit) ? 1_000_000m : BaseUnits.Contains(unit) ? 50_000_000m : 5_000_000m;
+            if (checked(order.Quantity * (order.UnitPriceIrr + order.HiddenPriceIrr)) < minimumNotional)
+                throw new OpeningOrderException("Order value is below the verified minimum notional.", OpeningOrderError.MinimumNotional);
+            if (order.TotalIrr > MaximumOrderValueIrr)
+                throw new OpeningOrderException("Order value exceeds the existing safety cap.", OpeningOrderError.SafetyCap);
+            stage = OpeningOrderStage.BuyingPower;
+            JsonElement money = await browser.ReadAsync(MofidRead.Money, null, cancellationToken).ConfigureAwait(false);
+            // Money verification is numeric-token-only in the observed authentication contract.
+            if (order.TotalIrr > Number(money, "buyPowerT2"))
+                throw new OpeningOrderException("Buying power is insufficient for this order.", OpeningOrderError.InsufficientBuyingPower);
+            stage = OpeningOrderStage.Calendar;
+            JsonElement calendar = await browser.ReadAsync(MofidRead.Calendar, null, cancellationToken).ConfigureAwait(false);
+            stage = OpeningOrderStage.Session;
+            JsonElement session = await browser.ReadAsync(MofidRead.Session, null, cancellationToken).ConfigureAwait(false);
+            stage = OpeningOrderStage.Calendar;
+            ValidateCalendar(symbol, calendar, session, settings);
+            stage = OpeningOrderStage.Preflight;
+            TimeSpan freshness = time.GetElapsedTime(started) + (settings.Start - time.GetLocalNow()) + settings.Duration;
+            if (freshness > TimeSpan.FromSeconds(15) || time.GetLocalNow() >= settings.Start)
+                throw new OpeningOrderException("Preflight data is stale for the requested window.", OpeningOrderError.StalePreflight);
+            validatedOrder = order;
+            validatedAt = started;
+            validatedCutoff = settings.Start + settings.Duration;
+        }
+        catch (OpeningOrderException error) { throw error.Stage == OpeningOrderStage.None ? error.AtStage(stage) : error; }
+        catch (Exception error) when (error is OverflowException or ArgumentOutOfRangeException or FormatException)
+        { throw new OpeningOrderException("Preflight values cannot be represented safely.", OpeningOrderError.InvalidNumericValue).AtStage(stage); }
     }
 
     internal static void ValidateCalendar(JsonElement symbol, JsonElement calendar, JsonElement session, DispatchSettings settings)
     {
         TimeZoneInfo zone = TimeZoneInfo.FindSystemTimeZoneById("Iran Standard Time");
         DateTimeOffset target = TimeZoneInfo.ConvertTime(settings.Start, zone);
-        DateTimeOffset server = ApiDate(Required(session, "serverTime"), zone);
-        DateTimeOffset marketDate = ApiDate(Required(session, "startSessionTimeStamp"), zone);
-        if (target.Date != server.Date || server.Date != marketDate.Date) throw Invalid();
+        DateTimeOffset SessionDate(string field)
+        {
+            try { return ApiDate(Required(session, field), zone); }
+            catch (OpeningOrderException error) { throw error.AtStage(OpeningOrderStage.Session); }
+            catch (ArgumentOutOfRangeException) { throw Invalid().AtStage(OpeningOrderStage.Session); }
+        }
+        DateTimeOffset server = SessionDate("serverTime");
+        DateTimeOffset marketDate = SessionDate("startSessionTimeStamp");
+        if (target.Date != server.Date || server.Date != marketDate.Date)
+            throw new OpeningOrderException("The broker session date does not match the requested day.", OpeningOrderError.StalePreflight).AtStage(OpeningOrderStage.Session);
         JsonElement items = Required(calendar, "items");
         if (items.ValueKind != JsonValueKind.Array) throw Invalid();
         long type = Integer(symbol, "tradingTimeType", true);
@@ -120,8 +151,9 @@ public sealed class MofidOpeningOrderBroker : IOpeningOrderBroker
         if (rules.Length != 1) throw Invalid();
         JsonElement rule = rules[0], days = Required(rule, "days");
         if (days.ValueKind != JsonValueKind.Array || days.GetArrayLength() == 0 ||
-            days.EnumerateArray().Any(x => !x.TryGetInt32(out int day) || day is < 1 or > 7) ||
-            !days.EnumerateArray().Any(x => x.GetInt32() == ((int)target.DayOfWeek + 1) % 7 + 1)) throw Invalid();
+            days.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.Number || !x.TryGetInt32(out int day) || day is < 1 or > 7)) throw Invalid();
+        if (!days.EnumerateArray().Any(x => x.GetInt32() == ((int)target.DayOfWeek + 1) % 7 + 1))
+            throw new OpeningOrderException("The requested day is outside the verified market calendar.", OpeningOrderError.MarketClosed);
         bool overlap = false;
         foreach ((string start, string end) in new[] { ("startPreTradingTime", "endPreTradingTime"), ("startTradingTime", "endTradingTime") })
         {
@@ -131,7 +163,7 @@ public sealed class MofidOpeningOrderBroker : IOpeningOrderBroker
             DateTimeOffset from = new(target.Date + a.ToTimeSpan(), target.Offset), to = new(target.Date + b.ToTimeSpan(), target.Offset);
             overlap |= settings.Start < to && settings.Start + settings.Duration > from;
         }
-        if (!overlap) throw new OpeningOrderException("Dispatch window does not overlap a verified trading session.");
+        if (!overlap) throw new OpeningOrderException("Dispatch window does not overlap a verified trading session.", OpeningOrderError.MarketClosed);
     }
 
     private static bool Empty(JsonElement item, string field) => !item.TryGetProperty(field, out JsonElement value) ||
@@ -143,9 +175,10 @@ public sealed class MofidOpeningOrderBroker : IOpeningOrderBroker
             return TimeZoneInfo.ConvertTime(DateTimeOffset.FromUnixTimeMilliseconds(milliseconds), zone);
         if (value.ValueKind != JsonValueKind.String) throw Invalid();
         string text = value.GetString()!;
-        if (DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime local) && local.Kind == DateTimeKind.Unspecified)
+        if (DateTime.TryParseExact(text, "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime local))
             return new(local, zone.GetUtcOffset(local));
-        if (DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset timestamp))
+        if (DateTimeOffset.TryParseExact(text, ["yyyy-MM-dd'T'HH:mm:ss.FFFFFFFzzz", "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF'Z'"],
+            CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out DateTimeOffset timestamp))
             return TimeZoneInfo.ConvertTime(timestamp, zone);
         throw Invalid();
     }

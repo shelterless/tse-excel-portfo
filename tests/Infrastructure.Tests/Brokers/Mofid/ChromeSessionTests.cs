@@ -11,14 +11,29 @@ namespace TseExcel.Infrastructure.Tests.Brokers.Mofid;
 public class ChromeSessionTests
 {
     [Fact]
+    public async Task WindowCleanupFailure_DoesNotLeaveAnAuthenticatedOrVisibleOwnedSession()
+    {
+        var fake = new BrowserFake();
+        await using var browser = new ChromeMofidBrowser(() => Task.FromResult(fake.Playwright), (_, _) =>
+            Task.FromException(new OpeningOrderException("private fixture data")));
+        var error = await Assert.ThrowsAsync<OpeningOrderException>(() => browser.AuthenticateAsync(false, CancellationToken.None));
+        Assert.Equal(OpeningOrderError.Authentication, error.Error);
+        Assert.Equal(OpeningOrderStage.Authentication, error.Stage);
+        Assert.DoesNotContain("private fixture data", error.ToString());
+        Assert.Equal(1, fake.LoginCloses); Assert.Equal(1, fake.BrowserCloses);
+        await Assert.ThrowsAsync<OpeningOrderException>(() => browser.ReadAsync(MofidRead.Drafts, null, CancellationToken.None));
+    }
+    [Fact]
     public async Task Login_LaunchesInstalledChromeAndClosesOnlyLoginWindowRetainingExactContext()
     {
         var fake = new BrowserFake();
-        await using var session = new ChromeMofidBrowser(() => Task.FromResult(fake.Playwright));
+        await using var session = new ChromeMofidBrowser(() => Task.FromResult(fake.Playwright), fake.HideWindows);
         await session.AuthenticateAsync(false, CancellationToken.None);
         Assert.Equal("chrome", fake.Launch!.Channel); Assert.False(fake.Launch.Headless);
         Assert.Equal(1, fake.Contexts); Assert.Equal(1, fake.Popups); Assert.Equal(1, fake.LoginCloses);
         Assert.Equal(0, fake.BrowserCloses);
+        Assert.Equal(new uint[] { 424242 }, fake.HiddenProcesses);
+        Assert.Equal(1, fake.AuxiliaryCloses);
         Assert.Equal(ServiceWorkerPolicy.Block, fake.ContextOptions!.ServiceWorkers);
         Assert.Contains("Browser.setWindowBounds", fake.CdpCommands);
         Assert.Equal(1, fake.TransportNavigations);
@@ -35,7 +50,7 @@ public class ChromeSessionTests
     public async Task ValidSession_IsReusedAndInvalidReadRequiresFreshInteractiveContext()
     {
         var fake = new BrowserFake();
-        await using var session = new ChromeMofidBrowser(() => Task.FromResult(fake.Playwright));
+        await using var session = new ChromeMofidBrowser(() => Task.FromResult(fake.Playwright), fake.HideWindows);
         await session.AuthenticateAsync(false, CancellationToken.None);
         await session.AuthenticateAsync(false, CancellationToken.None);
         Assert.Equal(1, fake.Contexts); Assert.Equal(1, fake.LoginCloses);
@@ -50,7 +65,7 @@ public class ChromeSessionTests
     public async Task AuthErrors_AreSanitizedAndOwnedBrowserIsReleased()
     {
         var fake = new BrowserFake { FailNavigation = true };
-        await using var session = new ChromeMofidBrowser(() => Task.FromResult(fake.Playwright));
+        await using var session = new ChromeMofidBrowser(() => Task.FromResult(fake.Playwright), fake.HideWindows);
         OpeningOrderException failure = await Assert.ThrowsAsync<OpeningOrderException>(() => session.AuthenticateAsync(false, CancellationToken.None));
         Assert.DoesNotContain("fixture-secret", failure.ToString());
         Assert.Equal(OpeningOrderError.Authentication, failure.Error);
@@ -69,7 +84,7 @@ public class ChromeSessionTests
     public async Task ReadErrors_AreCategorizedWithoutExposingEnvelopeOrResponse(string envelope, OpeningOrderError category)
     {
         var fake = new BrowserFake();
-        await using var session = new ChromeMofidBrowser(() => Task.FromResult(fake.Playwright));
+        await using var session = new ChromeMofidBrowser(() => Task.FromResult(fake.Playwright), fake.HideWindows);
         await session.AuthenticateAsync(false, CancellationToken.None);
         using var document = JsonDocument.Parse(envelope);
         fake.NextReadEnvelope = document.RootElement.Clone();
@@ -83,7 +98,7 @@ public class ChromeSessionTests
     public async Task Cancellation_ClosesOwnedSessionWithoutStoringAuthenticationMaterial()
     {
         var fake = new BrowserFake { WaitForLogin = true };
-        await using var session = new ChromeMofidBrowser(() => Task.FromResult(fake.Playwright));
+        await using var session = new ChromeMofidBrowser(() => Task.FromResult(fake.Playwright), fake.HideWindows);
         using var cancellation = new CancellationTokenSource();
         Task operation = session.AuthenticateAsync(false, cancellation.Token);
         cancellation.Cancel();
@@ -153,6 +168,17 @@ public class ChromeSessionTests
         internal List<string> CdpCommands { get; } = [];
         internal List<JsonElement> RequestArguments { get; } = [];
         internal string InitScript { get; private set; } = "";
+        internal List<uint> HiddenProcesses { get; } = [];
+        internal int AuxiliaryCloses { get; private set; }
+        internal Task HideWindows(uint processId, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            Assert.True(LoginCloses > 0);
+            Assert.True(TransportNavigations > 0);
+            Assert.Contains(RequestArguments, x => x.GetProperty("url").GetString()!.EndsWith("/money", StringComparison.Ordinal));
+            HiddenProcesses.Add(processId);
+            return Task.CompletedTask;
+        }
 
         internal BrowserFake()
         {
@@ -174,7 +200,9 @@ public class ChromeSessionTests
             {
                 if (method.Name == "DetachAsync") return Task.CompletedTask;
                 CdpCommands.Add((string)args![0]!);
-                return Task.FromResult<JsonElement?>(JsonSerializer.SerializeToElement(new { windowId = 1 }));
+                return Task.FromResult<JsonElement?>((string)args[0]! == "SystemInfo.getProcessInfo"
+                    ? JsonSerializer.SerializeToElement(new { processInfo = new[] { new { type = "browser", id = 424242 } } })
+                    : JsonSerializer.SerializeToElement(new { windowId = 1 }));
             });
             var transport = ApiProxy.Create<IPage>((method, args) =>
             {
@@ -202,9 +230,16 @@ public class ChromeSessionTests
                 "CloseAsync" => CloseLogin(),
                 _ => throw new InvalidOperationException(method.Name)
             });
+            var auxiliary = ApiProxy.Create<IPage>((method, _) => method.Name switch
+            {
+                "get_IsClosed" => false,
+                "CloseAsync" => CloseAuxiliary(),
+                _ => throw new InvalidOperationException(method.Name)
+            });
             var context = ApiProxy.Create<IBrowserContext>((method, args) => method.Name switch
             {
                 "add_Request" => null,
+                "get_Pages" => new[] { transport, auxiliary },
                 "NewPageAsync" => Task.FromResult(transport),
                 "NewCDPSessionAsync" => Task.FromResult(cdp),
                 "RunAndWaitForPageAsync" => PopupAsync((Func<Task>)args![0]!, login),
@@ -213,6 +248,8 @@ public class ChromeSessionTests
             var browser = ApiProxy.Create<IBrowser>((method, args) => method.Name switch
             {
                 "NewContextAsync" => NewContext(context, args), "CloseAsync" => CloseBrowser(),
+                "get_Contexts" => new[] { context },
+                "NewBrowserCDPSessionAsync" => Task.FromResult(cdp),
                 _ => throw new InvalidOperationException(method.Name)
             });
             var browserType = ApiProxy.Create<IBrowserType>((method, args) =>
@@ -229,6 +266,7 @@ public class ChromeSessionTests
             return WaitForLogin ? new TaskCompletionSource<IResponse>().Task : Task.FromResult(response);
         }
         private Task CloseLogin() { LoginCloses++; return Task.CompletedTask; }
+        private Task CloseAuxiliary() { AuxiliaryCloses++; return Task.CompletedTask; }
         private Task CloseBrowser() { BrowserCloses++; return Task.CompletedTask; }
         private Task<IBrowserContext> NewContext(IBrowserContext context, object?[]? args)
         { Contexts++; ContextOptions = (BrowserNewContextOptions)args![0]!; return Task.FromResult(context); }

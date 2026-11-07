@@ -33,7 +33,7 @@ public sealed class SystemDispatchClock : IDispatchClock
 
 public sealed record DispatchRecord(long Attempt, DateTimeOffset Timestamp, bool LocalFailure)
 {
-    public string Format() => Timestamp.ToString("HH:mm:ss.ffffff", CultureInfo.InvariantCulture) +
+    public string Format() => Timestamp.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture) +
         " | #" + Attempt.ToString("D6", CultureInfo.InvariantCulture) + (LocalFailure ? " | خطای آغاز" : "");
 }
 
@@ -43,6 +43,10 @@ public sealed class DispatchProgress
 {
     private readonly ConcurrentQueue<DispatchRecord> records = new();
     private long initiated, failures, sequence, elapsedTicks, remainingTicks;
+    private int stage;
+    public OpeningOrderStage Stage => (OpeningOrderStage)Volatile.Read(ref stage);
+    public void SetStage(OpeningOrderStage value) => Volatile.Write(ref stage, (int)value);
+    public void Freeze() => Interlocked.Exchange(ref remainingTicks, 0);
     public long InitiatedAttempts => Interlocked.Read(ref initiated);
     public long InitiationFailures => Interlocked.Read(ref failures);
     public TimeSpan Elapsed => TimeSpan.FromTicks(Interlocked.Read(ref elapsedTicks));
@@ -80,6 +84,7 @@ public sealed class DispatchEngine(IDispatchClock clock)
         TimeSpan elapsed = TimeSpan.Zero;
         try
         {
+            progress.SetStage(OpeningOrderStage.WaitingForStart);
             // Countdown and intervals share a monotonic timebase after this wall-clock conversion.
             while (clock.Elapsed < requestedAt)
             {
@@ -90,12 +95,18 @@ public sealed class DispatchEngine(IDispatchClock clock)
             while (clock.Elapsed < cutoff)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                progress.SetStage(OpeningOrderStage.Dispatching);
                 LocalInitiation result = await dispatch.InitiateAsync(clock.LocalNow, cancellationToken).ConfigureAwait(false);
                 progress.Add(result);
                 elapsed = clock.Elapsed - requestedAt;
                 progress.Update(elapsed, cutoff - clock.Elapsed);
                 // Start the minimum gap after local bridge acknowledgement, so bridge latency cannot compress it.
-                await clock.WaitUntilAsync(Min(cutoff, clock.Elapsed + settings.Interval), cancellationToken).ConfigureAwait(false);
+                TimeSpan next = Min(cutoff, clock.Elapsed + settings.Interval);
+                while (clock.Elapsed < next)
+                {
+                    progress.Update(clock.Elapsed - requestedAt, cutoff - clock.Elapsed);
+                    await clock.WaitUntilAsync(Min(next, clock.Elapsed + TimeSpan.FromMilliseconds(25)), cancellationToken).ConfigureAwait(false);
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { cancelled = true; }
@@ -105,6 +116,7 @@ public sealed class DispatchEngine(IDispatchClock clock)
             progress.Update(elapsed, TimeSpan.Zero);
             await dispatch.DisposeAsync().ConfigureAwait(false);
         }
+        progress.SetStage(OpeningOrderStage.Completed);
         return new DispatchSummary(progress.InitiatedAttempts, progress.InitiationFailures, elapsed, cancelled);
     }, CancellationToken.None);
 

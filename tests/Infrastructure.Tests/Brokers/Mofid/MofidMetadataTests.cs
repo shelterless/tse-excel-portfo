@@ -163,7 +163,7 @@ public class MofidMetadataTests
         var order = new InstrumentFees(.001m, 0, null).CreateOrder(Draft(), quantity, 5000);
         Assert.Equal(5_000_000m, MofidOpeningOrderBroker.MaximumOrderValueIrr);
         var error = await Assert.ThrowsAsync<OpeningOrderException>(() => broker.ValidateAsync(Draft(), order, Settings(), CancellationToken.None));
-        Assert.Equal("Order value fails the verified notional, safety cap or buying-power check.", error.Message);
+        Assert.Equal(OpeningOrderError.SafetyCap, error.Error);
         Assert.Equal(0, browser.Dispatches);
     }
 }

@@ -118,10 +118,10 @@ internal sealed class DraftSelectionForm : OpeningForm
         Grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(224, 233, 239);
         Grid.ColumnHeadersDefaultCellStyle.ForeColor = ForeColor;
         Grid.RowTemplate.Height = 34;
-        foreach (string title in new[] { "نماد", "نام ابزار", "جهت", "تعداد", "قیمت واحد (ریال)" }) Grid.Columns.Add(title, title);
+        foreach (string title in new[] { "نماد", "جهت", "تعداد", "قیمت واحد (ریال)" }) Grid.Columns.Add(title, title);
         foreach (OpeningDraft draft in drafts)
-            Grid.Rows.Add(draft.SymbolName, draft.SymbolName, SideText(draft.Side), Number(draft.Quantity), Number(draft.UnitPriceIrr));
-        Grid.Columns[1].FillWeight = 170;
+            Grid.Rows.Add(draft.SymbolName, SideText(draft.Side), Number(draft.Quantity), Number(draft.UnitPriceIrr));
+        Grid.Columns[0].FillWeight = 170;
         AddWide(Grid, true);
         AddWide(new Label { Text = drafts.Count == 0 ? "پیش‌نویسی موجود نیست؛ ابتدا در مفید یک پیش‌نویس ذخیره کنید." :
             Number(drafts.Count) + " پیش‌نویس  •  انتخاب با کلیک، کلیدهای جهت یا دوبار کلیک", AutoSize = true, ForeColor = Muted, Padding = new Padding(0, 10, 0, 0) });
@@ -160,7 +160,7 @@ internal sealed class OrderDetailsForm : OpeningForm
     {
         Stage("۲ از ۶  •  جزئیات یک سفارش");
         Guidance("تعداد و قیمت را بررسی کنید. مبلغ با هر تغییر محاسبه می‌شود و فقط مربوط به یک سفارش است.");
-        AddRow("نماد و نام ابزار", new Label { Text = draft.SymbolName, AutoSize = true });
+        AddRow("نماد", new Label { Text = draft.SymbolName, AutoSize = true });
         AddRow("جهت", new Label { Text = SideText(draft.Side), AutoSize = true });
         QuantityInput = Numeric(draft.Quantity, 0, long.MaxValue);
         PriceInput = Numeric(draft.UnitPriceIrr, 28, decimal.MaxValue);
@@ -256,13 +256,13 @@ internal sealed class DispatchTimingForm : OpeningForm
     internal NumericUpDown Minute { get; } = OrderDetailsForm.Numeric(44, 0, 59);
     internal NumericUpDown Second { get; } = OrderDetailsForm.Numeric(58, 0, 59);
     internal NumericUpDown Duration { get; } = OrderDetailsForm.Numeric(DispatchSettings.DefaultDurationSeconds, 6, 86400);
-    internal NumericUpDown Interval { get; } = OrderDetailsForm.Numeric(DispatchSettings.DefaultIntervalMicroseconds, 0, int.MaxValue);
+    internal NumericUpDown Interval { get; } = OrderDetailsForm.Numeric(DispatchSettings.DefaultIntervalMilliseconds, 0, int.MaxValue);
     internal Label Estimate { get; } = new() { AutoSize = true };
     private readonly Button next;
     internal event EventHandler? TimingChanged;
     internal TimeOnly StartTime => new(Whole(Hour), Whole(Minute), Whole(Second));
     internal decimal DurationSeconds => ((CompactNumericInput)Duration).EnteredValue;
-    internal int IntervalMicroseconds => Whole(Interval);
+    internal int IntervalMilliseconds => Whole(Interval);
     private static int Whole(NumericUpDown input)
     {
         decimal value = ((CompactNumericInput)input).EnteredValue;
@@ -272,9 +272,9 @@ internal sealed class DispatchTimingForm : OpeningForm
     internal DispatchTimingForm() : base("زمان‌بندی ارسال با ساعت ویندوز", 580, 500)
     {
         Stage("۳ از ۶  •  زمان‌بندی با ساعت ویندوز");
-        Guidance("شروع: ساعت امروز ویندوز. مدت: طول بازهٔ تلاش‌ها. فاصله: حداقل فاصلهٔ آغاز دو درخواست، به میکروثانیه؛ هر ثانیه یک میلیون میکروثانیه است.");
+        Guidance("شروع: ساعت امروز ویندوز. مدت: طول بازهٔ تلاش‌ها. فاصله: حداقل فاصلهٔ آغاز دو درخواست، به میلی‌ثانیه؛ هر ثانیه هزار میلی‌ثانیه است.");
         AddRow("ساعت شروع", Hour); AddRow("دقیقه", Minute); AddRow("ثانیه", Second);
-        AddRow("مدت ارسال (ثانیه)", Duration); AddRow("حداقل فاصله (میکروثانیه)", Interval);
+        AddRow("مدت ارسال (ثانیه)", Duration); AddRow("حداقل فاصله (میلی‌ثانیه)", Interval);
         AddRow("تخمین تعداد تلاش محلی", Estimate);
         Guidance("تخمین، سقف تقریبی تلاش محلی است؛ سرعت شبکه، زمان‌بندی ویندوز، پذیرش سفارش و اولویت صف تضمین نمی‌شود.");
         foreach (NumericUpDown input in new[] { Hour, Minute, Second, Duration, Interval })
@@ -293,7 +293,7 @@ internal sealed class FinalConfirmationForm : OpeningForm
     {
         Stage("۴ از ۶  •  بازبینی و تأیید نهایی");
         Guidance("هر ارسال یک درخواست سفارش مستقل است. ممکن است چند سفارش پذیرفته یا اجرا شوند. تعداد تلاش‌ها نشان‌دهندهٔ پذیرش یا اجرای سفارش نیست. انصراف، سفارش‌های ارسال‌شده را بازنمی‌گرداند.", true);
-        AddRow("نماد و ابزار", new Label { Text = order.SymbolName, AutoSize = true });
+        AddRow("نماد", new Label { Text = order.SymbolName, AutoSize = true });
         AddRow("جهت", new Label { Text = SideText(order.Side), AutoSize = true });
         AddRow("تعداد", new Label { Text = Number(order.Quantity), AutoSize = true });
         AddRow("قیمت واحد (ریال)", new Label { Text = Number(order.UnitPriceIrr), AutoSize = true });
@@ -302,7 +302,7 @@ internal sealed class FinalConfirmationForm : OpeningForm
         AddRow("شروع محلی ویندوز", new Label { Text = settings.Start.ToLocalTime().ToString("yyyy/MM/dd HH:mm:ss"), AutoSize = true,
             RightToLeft = RightToLeft.No, TextAlign = ContentAlignment.MiddleRight });
         AddRow("مدت (ثانیه)", new Label { Text = Number((decimal)settings.Duration.TotalSeconds), AutoSize = true });
-        AddRow("حداقل فاصله (میکروثانیه)", new Label { Text = Number(settings.Interval.Ticks / 10m), AutoSize = true });
+        AddRow("حداقل فاصله (میلی‌ثانیه)", new Label { Text = Number(settings.Interval.Ticks / (decimal)TimeSpan.TicksPerMillisecond), AutoSize = true });
         AddRow("تخمین تلاش محلی", new Label { Text = Number(settings.EstimatedAttempts), AutoSize = true });
         AddButton("تأیید و شروع", DialogResult.OK);
         CancelButton = AddButton("انصراف", DialogResult.Cancel);
@@ -357,17 +357,25 @@ internal sealed class DispatchExecutionForm : OpeningForm
         Log.BeginUpdate();
         try { foreach (DispatchRecord record in records) Log.Items.Add(record.Format()); }
         finally { Log.EndUpdate(); }
-        elapsed.Text = progress.Elapsed.ToString(@"hh\:mm\:ss\.ffffff");
-        remaining.Text = progress.Remaining.ToString(@"hh\:mm\:ss\.ffffff");
+        elapsed.Text = progress.Elapsed.ToString(@"hh\:mm\:ss\.fff");
+        remaining.Text = progress.Remaining.ToString(@"hh\:mm\:ss\.fff");
         count.Text = OpeningForm.Number(progress.InitiatedAttempts);
         if (!Completed && CancelDispatch.Enabled)
-            state.Text = progress.InitiatedAttempts > 0 ? "بازهٔ ارسال فعال است؛ نتیجهٔ کارگزاری نامشخص است." : "در انتظار شروع و بررسی پیش از ارسال…";
+            state.Text = progress.Stage switch
+            {
+                OpeningOrderStage.Preflight => "در حال بررسی پیش از ارسال؛ هنوز تلاشی ثبت نشده است…",
+                OpeningOrderStage.PreparingDispatch => "در حال آماده‌سازی ارسال؛ هنوز تلاشی ثبت نشده است…",
+                OpeningOrderStage.WaitingForStart => "بررسی کامل شد؛ در انتظار زمان شروع ویندوز…",
+                OpeningOrderStage.Dispatching => "بازهٔ ارسال فعال است؛ نتیجهٔ کارگزاری نامشخص است.",
+                _ => "در انتظار شروع و بررسی پیش از ارسال…"
+            };
         // Retain every record and preserve the user's scroll position while reading older entries.
     }
 
-    internal void Complete(DispatchSummary? summary, bool failed, string? failureMessage = null)
+    internal void Complete(DispatchSummary? summary, bool failed, string? failureMessage = null, bool authenticationFailed = false)
     {
         timer.Stop();
+        progress.Freeze();
         while (true)
         {
             long before = Log.Items.Count;
@@ -375,13 +383,19 @@ internal sealed class DispatchExecutionForm : OpeningForm
             if (Log.Items.Count == before) break;
         }
         Completed = true;
-        Stage("۶ از ۶  •  پایان عملیات محلی");
+        bool noAttempts = progress.InitiatedAttempts == 0;
+        bool dispatchStarted = !noAttempts || progress.Stage is OpeningOrderStage.Dispatching or OpeningOrderStage.Completed;
+        Stage(failed ? authenticationFailed ? "ورود یا اعتبار نشست تأیید نشد" :
+            !dispatchStarted ? "توقف پیش از آغاز ارسال" : "توقف در بازهٔ ارسال" :
+            summary?.Cancelled == true ? "عملیات لغو شد" : "۶ از ۶  •  پایان بازهٔ ارسال محلی");
         CancelDispatch.Enabled = false; CloseButton.Enabled = true;
         CloseButton.Focus();
-        state.Text = (failed ? (failureMessage ?? "عملیات متوقف شد؛ نتیجهٔ کارگزاری نامشخص است.") + " خودکار تکرار نکنید." :
-            summary?.Cancelled == true ? "ارسال‌های بعدی متوقف شدند." : "بازهٔ ارسال پایان یافت.") +
+        state.Text = (failed ? (failureMessage ?? "عملیات متوقف شد.") :
+            summary?.Cancelled == true ? "آغاز تلاش‌های بعدی لغو شد." : "بازهٔ ارسال پایان یافت.") +
+            (noAttempts ? " هیچ تلاش ارسال محلی ثبت نشد." : " نتیجهٔ درخواست‌های آغازشده در کارگزاری نامشخص است؛ خودکار تکرار نکنید.") +
+            (failed && dispatchStarted && noAttempts ? " نتیجهٔ درخواست احتمالی نامشخص است؛ خودکار تکرار نکنید." : "") +
             " خطاهای آغاز محلی: " + OpeningForm.Number(progress.InitiationFailures) +
-            "؛ پذیرش و اجرا بررسی نشده‌اند. سفارش‌های کارگزاری را در پنل مفید بررسی کنید.";
+            "؛ این آمار وضعیت سفارش‌های دیگر کارگزاری را مشخص نمی‌کند.";
     }
 
     protected override void Dispose(bool disposing) { if (disposing) timer.Dispose(); base.Dispose(disposing); }

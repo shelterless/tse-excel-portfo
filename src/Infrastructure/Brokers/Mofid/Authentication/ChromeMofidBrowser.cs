@@ -7,8 +7,11 @@ namespace TseExcel.Infrastructure.Brokers.Mofid;
 internal sealed class ChromeMofidBrowser : IMofidBrowser
 {
     private readonly Func<Task<IPlaywright>> createPlaywright;
+    private readonly Func<uint, CancellationToken, Task> hideOwnedWindows;
     internal ChromeMofidBrowser(string driverDirectory) : this(() => MofidBrowserDriver.CreateAsync(driverDirectory)) { }
-    internal ChromeMofidBrowser(Func<Task<IPlaywright>> createPlaywright) => this.createPlaywright = createPlaywright;
+    internal ChromeMofidBrowser(Func<Task<IPlaywright>> createPlaywright,
+        Func<uint, CancellationToken, Task>? hideOwnedWindows = null)
+    { this.createPlaywright = createPlaywright; this.hideOwnedWindows = hideOwnedWindows ?? OwnedChromeWindows.HideAsync; }
     internal const string ClientOrigin = "https://d.easytrader.ir";
     internal const string ApiOrigin = "https://api-mts.orbis.easytrader.ir";
     private readonly SemaphoreSlim sessionGate = new(1, 1);
@@ -74,16 +77,35 @@ internal sealed class ChromeMofidBrowser : IMofidBrowser
             await transportPage.GotoAsync(ClientOrigin + "/", new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 }).ConfigureAwait(false);
             JsonElement verified = await ReadAsync(MofidRead.Money, null, cancellationToken).ConfigureAwait(false);
             MofidJson.Number(verified, "buyPowerT2");
+            // Authentication can open additional pages. Close all owned pages except the verified transport.
+            foreach (IBrowserContext ownedContext in browser.Contexts)
+                foreach (IPage page in ownedContext.Pages.ToArray())
+                    if (!ReferenceEquals(page, transportPage) && !page.IsClosed) await page.CloseAsync().ConfigureAwait(false);
+            RequireClientPage(transportPage);
+            ICDPSession browserSession = await browser.NewBrowserCDPSessionAsync().ConfigureAwait(false);
+            try
+            {
+                JsonElement? processes = await browserSession.SendAsync("SystemInfo.getProcessInfo").ConfigureAwait(false);
+                JsonElement[] owners = processes!.Value.GetProperty("processInfo").EnumerateArray()
+                    .Where(x => x.GetProperty("type").GetString() == "browser").ToArray();
+                if (owners.Length != 1 || !owners[0].GetProperty("id").TryGetUInt32(out uint processId) || processId == 0)
+                    throw new OpeningOrderException("Owned Chrome process could not be verified.", OpeningOrderError.Authentication);
+                // Hiding the retained window removes its minimized taskbar entry without destroying its context.
+                await hideOwnedWindows(processId, cancellationToken).ConfigureAwait(false);
+            }
+            finally { await browserSession.DetachAsync().ConfigureAwait(false); }
         }
         catch (OperationCanceledException)
         {
             await CloseBrowserAsync().ConfigureAwait(false);
             throw;
         }
-        catch (Exception exception) when (exception is PlaywrightException or JsonException or OpeningOrderException)
+        catch (Exception exception) when (exception is PlaywrightException or JsonException or OpeningOrderException or InvalidOperationException or KeyNotFoundException)
         {
             await CloseBrowserAsync().ConfigureAwait(false);
-            throw new OpeningOrderException("Interactive Chrome authentication did not establish a verified session.", OpeningOrderError.Authentication);
+            var numeric = exception as OpeningOrderException;
+            throw new OpeningOrderException("Interactive Chrome authentication did not establish a verified session.", OpeningOrderError.Authentication,
+                numeric?.Field ?? OpeningOrderField.None, numeric?.NumericIssue ?? NumericIssue.None).AtStage(OpeningOrderStage.Authentication);
         }
         finally { sessionGate.Release(); }
     }
