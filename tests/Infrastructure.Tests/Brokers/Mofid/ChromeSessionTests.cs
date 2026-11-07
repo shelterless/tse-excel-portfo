@@ -53,8 +53,30 @@ public class ChromeSessionTests
         await using var session = new ChromeMofidBrowser(() => Task.FromResult(fake.Playwright));
         OpeningOrderException failure = await Assert.ThrowsAsync<OpeningOrderException>(() => session.AuthenticateAsync(false, CancellationToken.None));
         Assert.DoesNotContain("fixture-secret", failure.ToString());
+        Assert.Equal(OpeningOrderError.Authentication, failure.Error);
         Assert.Equal(1, fake.BrowserCloses);
         await Assert.ThrowsAsync<OpeningOrderException>(() => session.ReadAsync(MofidRead.Money, null, CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("{\"ok\":false,\"authentication\":true}", OpeningOrderError.Authentication)]
+    [InlineData("{\"ok\":false}", OpeningOrderError.ReadFailure)]
+    [InlineData("{\"ok\":false,\"malformed\":true}", OpeningOrderError.MalformedResponse)]
+    [InlineData("{\"ok\":true,\"body\":\"private fixture data\"}", OpeningOrderError.MalformedResponse)]
+    [InlineData("{}", OpeningOrderError.MalformedResponse)]
+    [InlineData("{\"ok\":true,\"body\":null}", OpeningOrderError.MalformedResponse)]
+    [InlineData("{\"ok\":true,\"body\":1}", OpeningOrderError.MalformedResponse)]
+    public async Task ReadErrors_AreCategorizedWithoutExposingEnvelopeOrResponse(string envelope, OpeningOrderError category)
+    {
+        var fake = new BrowserFake();
+        await using var session = new ChromeMofidBrowser(() => Task.FromResult(fake.Playwright));
+        await session.AuthenticateAsync(false, CancellationToken.None);
+        using var document = JsonDocument.Parse(envelope);
+        fake.NextReadEnvelope = document.RootElement.Clone();
+        var failure = await Assert.ThrowsAsync<OpeningOrderException>(() => session.ReadAsync(MofidRead.Symbols, null, CancellationToken.None));
+        Assert.Equal(category, failure.Error);
+        Assert.DoesNotContain("private fixture data", failure.ToString());
+        Assert.DoesNotContain("fixture-session", failure.ToString());
     }
 
     [Fact]
@@ -125,6 +147,7 @@ public class ChromeSessionTests
         internal int BrowserCloses { get; private set; }
         internal int TransportNavigations { get; private set; }
         internal bool FailNextRead { get; set; }
+        internal JsonElement? NextReadEnvelope { get; set; }
         internal bool FailNavigation { get; init; }
         internal bool WaitForLogin { get; init; }
         internal List<string> CdpCommands { get; } = [];
@@ -161,6 +184,7 @@ public class ChromeSessionTests
                 if (method.Name == "EvaluateAsync" && !method.IsGenericMethod) { Popups++; return Task.FromResult<JsonElement?>(null); }
                 if (method.Name == "EvaluateAsync" && method.IsGenericMethod)
                 {
+                    if (NextReadEnvelope is JsonElement envelope) { NextReadEnvelope = null; return Task.FromResult(envelope); }
                     JsonElement data = JsonSerializer.SerializeToElement(args![1]); RequestArguments.Add(data);
                     bool ok = !FailNextRead; FailNextRead = false;
                     string body = data.GetProperty("url").GetString()!.EndsWith("/draft", StringComparison.Ordinal) ? "[]" : "{\"buyPowerT2\":10000000}";

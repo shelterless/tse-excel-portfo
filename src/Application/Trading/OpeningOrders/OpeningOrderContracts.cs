@@ -28,7 +28,18 @@ public interface IOrderDispatch : IAsyncDisposable
 
 public readonly record struct LocalInitiation(bool Initiated, DateTimeOffset Timestamp, bool LocalFailure);
 
+public enum OpeningOrderError
+{
+    General,
+    Authentication,
+    ReadFailure,
+    MalformedResponse,
+    MissingInstrumentMetadata,
+    InvalidNumericValue
+}
+
 public sealed class OpeningOrderException : Exception
 {
-    public OpeningOrderException(string message) : base(message) { }
+    public OpeningOrderError Error { get; }
+    public OpeningOrderException(string message, OpeningOrderError error = OpeningOrderError.General) : base(message) => Error = error;
 }

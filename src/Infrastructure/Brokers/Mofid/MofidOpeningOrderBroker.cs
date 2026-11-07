@@ -54,15 +54,17 @@ public sealed class MofidOpeningOrderBroker : IOpeningOrderBroker
     {
         if (draft.Side != OrderSide.Buy) throw new OpeningOrderException("SELL fee and live-order contracts are not approved.");
         JsonElement all = await browser.ReadAsync(MofidRead.Symbols, null, cancellationToken).ConfigureAwait(false);
-        return Fees(Match(Required(all, "symbols"), draft.SymbolIsin));
+        JsonElement symbol = Match(Required(all, "symbols"), draft.SymbolIsin);
+        if (Text(symbol, "symbolName") != draft.SymbolName) throw Invalid();
+        return Fees(symbol);
     }
 
     private static InstrumentFees Fees(JsonElement symbol)
     {
-        decimal rate = Number(symbol, "buyCommission");
-        if (rate >= 1) throw Invalid();
+        decimal rate = Number(symbol, "buyCommission", allowString: true);
+        if (rate >= 1) throw InvalidNumber();
         bool hasSize = symbol.TryGetProperty("csize", out JsonElement size);
-        return new(rate, Number(symbol, "hidePrice"), !hasSize || size.ValueKind == JsonValueKind.Null ? null : Number(symbol, "csize", true));
+        return new(rate, Number(symbol, "hidePrice", allowString: true), !hasSize || size.ValueKind == JsonValueKind.Null ? null : Number(symbol, "csize", true, allowString: true));
     }
 
     public async Task ValidateAsync(OpeningDraft draft, OrderTerms order, DispatchSettings settings, CancellationToken cancellationToken)

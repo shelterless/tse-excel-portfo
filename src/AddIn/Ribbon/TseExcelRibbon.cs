@@ -45,8 +45,10 @@ public class TseExcelRibbon : ExcelRibbon
                   <button id="tseExcelShowJson" label="Show JSON" onAction="OnShowJson" />
                 </group>
                 <group id="tseExcelMofidGroup" label="مفید">
-                  <button id="tseExcelMofidLogin" label="ورود به مفید" onAction="OnMofidLogin" />
-                  <button id="tseExcelOpeningOrder" label="ارسال سرخطی" onAction="OnOpeningOrder" />
+                  <button id="tseExcelMofidLogin" label="ورود به مفید" onAction="OnMofidLogin"
+                    screentip="ورود با Chrome" supertip="ورود تعاملی یا تازه‌سازی نشست؛ اطلاعات نشست فقط در حافظهٔ اجرای فعلی اکسل و افزونه نگهداری می‌شود." keytip="ML" />
+                  <button id="tseExcelOpeningOrder" label="ارسال سرخطی" onAction="OnOpeningOrder"
+                    screentip="بررسی پیش‌نویس و آماده‌سازی سفارش" supertip="انتخاب پیش‌نویس، بررسی تعداد و قیمت، زمان‌بندی و تأیید نهایی؛ انتخاب پیش‌نویس سفارشی ارسال نمی‌کند." keytip="MO" />
                 </group>
               </tab>
             </tabs>
