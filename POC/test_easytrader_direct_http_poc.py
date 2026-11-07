@@ -324,6 +324,55 @@ class AuthenticationTests(OfflineCase):
 
 
 class HttpTests(OfflineCase):
+    def test_warmup_prepares_distinct_connections_without_any_http_request(self):
+        client = poc.NativeHttp(auth(), api_origin="http://127.0.0.1:12345", loopback=True)
+        self.addCleanup(client.close)
+        client.verified = True
+        connections = []
+
+        def connection():
+            conn = Mock(sock=None)
+            conn.connect.side_effect = lambda: setattr(conn, "sock", Mock())
+            connections.append(conn)
+            return conn
+
+        with patch.object(client, "_connection", side_effect=connection):
+            client.warm_connections(3, time.perf_counter_ns() + 1_000_000_000)
+        self.assertEqual(len(connections), 3)
+        for conn in connections:
+            conn.connect.assert_called_once()
+            conn.request.assert_not_called()
+        self.assertGreaterEqual(client.dispatch_capacity(poc.Window.from_inputs(3, 340)), 9)
+        self.assertLessEqual(client.capacity, poc.MAX_CONCURRENCY)
+
+    def test_warmup_failure_or_deadline_prevents_live_dispatch(self):
+        for error, expected in ((ssl.SSLError("fake-private"), "tls_failure"),
+                                (TimeoutError("fake-private"), "connection_warmup_timeout"),
+                                (ConnectionRefusedError("fake-private"), "transport_failure")):
+            with self.subTest(expected=expected):
+                client = poc.NativeHttp(auth(), api_origin="http://127.0.0.1:12345", loopback=True)
+                client.verified = True
+                conn = Mock(sock=None)
+                conn.connect.side_effect = error
+                with patch.object(client, "_connection", return_value=conn):
+                    with self.assertRaisesRegex(poc.Blocked, expected):
+                        client.warm_connections(1, time.perf_counter_ns() + 1_000_000_000)
+                self.assertFalse(client.verified)
+                conn.request.assert_not_called()
+                client.close()
+        release = threading.Event()
+        client = poc.NativeHttp(auth(), api_origin="http://127.0.0.1:12345", loopback=True)
+        client.verified = True
+        conn = Mock(sock=None)
+        conn.connect.side_effect = lambda: release.wait(1)
+        with patch.object(client, "_connection", return_value=conn):
+            with self.assertRaisesRegex(poc.Blocked, "connection_warmup_timeout"):
+                client.warm_connections(1, time.perf_counter_ns() + 20_000_000)
+        self.assertFalse(client.verified)
+        client.close()
+        release.set()
+        conn.request.assert_not_called()
+
     def test_required_headers_and_cookies_native_reads_and_full_preflight(self):
         with Server() as server:
             client = server.client()
@@ -515,6 +564,58 @@ class FinancialTests(OfflineCase):
 
 
 class SchedulingTests(OfflineCase):
+    def test_late_scheduler_notification_does_not_add_another_delay(self):
+        class NotificationClock(FakeClock):
+            pending_delay = False
+
+            def __call__(self):
+                if threading.current_thread().name.startswith("native-order-"):
+                    self.pending_delay = True
+                elif self.pending_delay:
+                    self.advance(.05)
+                    self.pending_delay = False
+                return super().__call__()
+
+        clock = NotificationClock()
+        report = poc.dispatch(simulated_submit(lambda _: poc.HttpResult("mock")), b"{}",
+                              poc.Window.from_inputs(1, 340), 0, approved=True, clock=clock,
+                              pause=clock.advance, cancel=FakeCancel(clock))
+        self.assertEqual([a.initiated_ns for a in report.attempts], [0, 340_000_000, 680_000_000])
+
+    def test_workers_are_prestarted_and_reused_across_attempts(self):
+        clock = FakeClock()
+        worker_objects = set()
+        created = []
+        original_start = threading.Thread.start
+
+        def start(worker):
+            if worker.name.startswith("native-order-"):
+                created.append(worker)
+            return original_start(worker)
+
+        def call(_):
+            self.assertEqual(len(created), 2)
+            worker_objects.add(threading.current_thread())
+            return poc.HttpResult("mock")
+
+        with patch.object(threading.Thread, "start", start):
+            report = poc.dispatch(simulated_submit(call), b"{}", poc.Window.from_inputs(1, 100), 0,
+                                  approved=True, concurrency=2, clock=clock, pause=clock.advance,
+                                  cancel=FakeCancel(clock))
+        self.assertEqual(len(report.attempts), 10)
+        self.assertTrue(all(a.result.category == "mock" for a in report.attempts))
+        self.assertEqual(len(created), 2)
+        self.assertLessEqual(len(worker_objects), 2)
+
+    def test_live_spacing_cannot_be_configured_below_po_reported_minimum(self):
+        order = poc.build_buy(*fixtures(), 100000000, 1000, 1000, poc.DESKTOP)
+        fresh = poc.Preflight(order, time.perf_counter_ns())
+        client = Mock(verified=True, live_enabled=True, origin=poc.DESKTOP)
+        with patch.object(poc, "dispatch", side_effect=AssertionError("must not dispatch")):
+            with self.assertRaisesRegex(poc.Blocked, "live_interval_below_300_ms"):
+                poc.live_dispatch(client, order, fresh, poc.Window.from_inputs(1, 299),
+                                  time.perf_counter_ns() + 1_000_000_000, confirmed=True)
+
     def test_ms_conversion_estimates_and_exclusive_end(self):
         for seconds, interval, count in ((3, 340, 9), (5, 350, 15), (2, 1000, 2), (1, 1000, 1)):
             with self.subTest(seconds=seconds, interval=interval):
@@ -523,7 +624,7 @@ class SchedulingTests(OfflineCase):
                 self.assertEqual(window.attempts, count)
                 clock = FakeClock()
                 report = poc.dispatch(simulated_submit(lambda _: poc.HttpResult("mock")), b"{}", window, 0,
-                                      approved=True, clock=clock, cancel=FakeCancel(clock))
+                                      approved=True, clock=clock, pause=clock.advance, cancel=FakeCancel(clock))
                 stamps = [a.initiated_ns for a in report.attempts]
                 self.assertEqual(len(stamps), count)
                 self.assertTrue(all(t < window.duration_ns for t in stamps))
@@ -543,7 +644,7 @@ class SchedulingTests(OfflineCase):
             return poc.HttpResult("mock")
 
         report = poc.dispatch(simulated_submit(submit), b"{}", poc.Window.from_inputs(2, 340), 0,
-                              approved=True, clock=clock, cancel=FakeCancel(clock))
+                              approved=True, clock=clock, pause=clock.advance, cancel=FakeCancel(clock))
         stamps = [a.initiated_ns for a in report.attempts]
         self.assertLess(len(stamps), 6)
         self.assertTrue(all(b - a >= 340_000_000 for a, b in zip(stamps, stamps[1:])))
@@ -561,7 +662,7 @@ class SchedulingTests(OfflineCase):
             poc.dispatch(submit, b"fake-private-payload", window, 0)
         clock = FakeClock()
         report = poc.dispatch(simulated_submit(submit), b"fake-private-payload", window, 0, approved=True,
-                              clock=clock, cancel=FakeCancel(clock))
+                              clock=clock, pause=clock.advance, cancel=FakeCancel(clock))
         submit.assert_called_once()
         diagnostic = json.dumps(report.diagnostics())
         self.assertNotIn("fake-private", diagnostic)
@@ -601,7 +702,7 @@ class SchedulingTests(OfflineCase):
             return poc.HttpResult("initiation_cancelled_or_cutoff")
 
         report = poc.dispatch(delayed_setup, b"{}", poc.Window.from_inputs(1, 340), 0,
-                              approved=True, clock=clock, cancel=FakeCancel(clock))
+                              approved=True, clock=clock, pause=clock.advance, cancel=FakeCancel(clock))
         self.assertEqual(report.scheduled_attempts, 1)
         self.assertEqual(report.attempts, [])
         self.assertEqual(report.non_initiated, ["initiation_cancelled_or_cutoff"])
@@ -610,13 +711,71 @@ class SchedulingTests(OfflineCase):
         clock = FakeClock()
         report = poc.dispatch(lambda body, begin: poc.HttpResult("native_verification_required"), b"{}",
                               poc.Window.from_inputs(1, 340), 0, approved=True,
-                              clock=clock, cancel=FakeCancel(clock))
+                              clock=clock, pause=clock.advance, cancel=FakeCancel(clock))
         self.assertEqual(report.scheduled_attempts, 1)
         self.assertEqual(report.attempts, [])
         self.assertEqual(report.non_initiated, ["native_verification_required"])
 
 
 class IntegrationTests(OfflineCase):
+    def test_blocking_request_send_call_does_not_serialize_next_post_call(self):
+        with Server() as server:
+            client = server.client()
+            self.addCleanup(client.close)
+            client.verify()
+            client.warm_connections(3, time.perf_counter_ns() + 1_000_000_000)
+            calls, returns = [], []
+            original_request = poc.http.client.HTTPConnection.request
+
+            def blocked_send(conn, method, path, **kwargs):
+                if path == poc.ORDER:
+                    calls.append(time.perf_counter_ns())
+                    time.sleep(.8)  # Hold the HTTP send call, not response handling.
+                result = original_request(conn, method, path, **kwargs)
+                if path == poc.ORDER:
+                    returns.append(time.perf_counter_ns())
+                return result
+
+            with patch.object(poc.http.client.HTTPConnection, "request", blocked_send):
+                report = poc.dispatch(lambda body, begin: client.submit(body, approved=True, on_initiated=begin),
+                                      b"{}", poc.Window.from_inputs(1, 340), time.perf_counter_ns() + 50_000_000,
+                                      approved=True, concurrency=3)
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(len(server.received), 3)
+            self.assertLess(calls[-1], returns[0])
+            self.assertTrue(all(b - a >= 340_000_000 for a, b in zip(
+                [a.initiated_ns for a in report.attempts], [a.initiated_ns for a in report.attempts][1:])))
+            self.assertTrue(all(a.result.acceptance == "accepted" for a in report.attempts))
+            print("SEND_PHASE_EVIDENCE " + json.dumps(dict(received=3, request_calls_ns=calls,
+                  request_returns_ns=returns, all_calls_before_first_return=calls[-1] < returns[0])))
+
+    def test_two_second_responses_keep_all_nine_paced_calls_with_warmed_connections(self):
+        with Server() as server:
+            server.delay = 2
+            client = server.client()
+            self.addCleanup(client.close)
+            client.verify()
+            window = poc.Window.from_inputs(3, 340)
+            capacity = client.dispatch_capacity(window)
+            client.warm_connections(capacity, time.perf_counter_ns() + 1_000_000_000)
+            order = poc.build_buy(*fixtures(), 100000000, 1000, 1000, poc.DESKTOP)
+            fresh = poc.Preflight(order, time.perf_counter_ns())
+            with patch.object(client, "_connection", side_effect=AssertionError("cold connection in dispatch")), \
+                    patch.object(poc.http.client.HTTPConnection, "connect", side_effect=AssertionError("cold TCP setup")):
+                report = poc.live_dispatch(client, order, fresh, window, time.perf_counter_ns() + 50_000_000,
+                                           confirmed=True)
+            stamps = [a.initiated_ns for a in report.attempts]
+            gaps = [(b - a) / 1e6 for a, b in zip(stamps, stamps[1:])]
+            self.assertEqual(len(server.received), 9)
+            self.assertEqual(len(stamps), 9)
+            self.assertEqual(report.capacity_skips, 0)
+            self.assertGreaterEqual(min(gaps), 340)
+            self.assertGreaterEqual(server.max_active, 6)
+            self.assertTrue(all(a.result.acceptance == "accepted" for a in report.attempts))
+            print("SLOW_RESPONSE_EVIDENCE " + json.dumps(dict(received=9, worker_capacity=capacity,
+                  capacity_skips=report.capacity_skips, client_gap_ms=gaps, max_concurrent=server.max_active,
+                  client_monotonic_ns=stamps, server_monotonic_ns=[s for s, _ in server.received])))
+
     def test_cancel_drains_transmitted_request_and_dropped_ack_never_replays(self):
         with Server() as server:
             server.delay = .2
@@ -716,7 +875,7 @@ class CommandTests(OfflineCase):
                     patch.object(poc, "monotonic_target", side_effect=lambda _: time.perf_counter_ns() + 500_000_000), \
                     patch.object(poc, "confirm_order", return_value=True), \
                     patch.object(poc, "wait_until", side_effect=wait_after_warning), \
-                    patch("builtins.input", side_effect=["1", "", "", "0.1", "50"]), \
+                    patch("builtins.input", side_effect=["1", "", "", "0.5", "340"]), \
                     contextlib.redirect_stdout(output):
                 self.assertEqual(poc.main(["--authenticate", "--live"]), 0)
             self.assertEqual(len(server.received), 2)

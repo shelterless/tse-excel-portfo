@@ -40,6 +40,8 @@ ORDER = "/core/api/v2/order"
 AUTH_HEADERS = {"authorization", "x-device-id", "x-app-name", "x-customheader", "x-api-key", "shard"}
 MAX_ORDER_VALUE_IRR = 5_000_000
 MAX_PREFLIGHT_NS = 15_000_000_000
+MIN_LIVE_INTERVAL_NS = 300_000_000  # PO-reported broker minimum; 350 ms remains the default.
+MAX_CONCURRENCY = 16
 TEHRAN = timezone(timedelta(hours=3, minutes=30))
 MARKET_TIME_WARNING = "Broker enforces market-entry timing; requests may be rejected before entry is allowed."
 
@@ -219,20 +221,26 @@ class HttpResult:
 class NativeHttp:
     """Fixed-origin native HTTP pool; no redirects, proxies, automatic retries, or browser reference."""
 
-    def __init__(self, material, *, api_origin=API, concurrency=4, timeout=3.0, loopback=False, live_enabled=False):
+    def __init__(self, material, *, api_origin=API, concurrency=None, timeout=3.0, loopback=False, live_enabled=False):
         parsed = urlsplit(api_origin)
         is_local = parsed.hostname in ("127.0.0.1", "localhost", "::1")
         if (not material.teardown_complete or (api_origin != API and not (loopback and is_local))
                 or parsed.path or parsed.query or parsed.fragment or parsed.username
                 or parsed.scheme not in (("https", "http") if loopback and is_local else ("https",))):
             raise Blocked("invalid_native_handoff")
-        if not 1 <= concurrency <= 16 or not math.isfinite(timeout) or not 0 < timeout <= 30:
+        if not math.isfinite(timeout) or not 0 < timeout <= 30:
+            raise Blocked("invalid_transport_limits")
+        if concurrency is None:
+            concurrency = min(MAX_CONCURRENCY, math.ceil(timeout * 1e9 / MIN_LIVE_INTERVAL_NS) + 1)
+        if type(concurrency) is not int or not 1 <= concurrency <= MAX_CONCURRENCY:
             raise Blocked("invalid_transport_limits")
         if material.origin not in (DESKTOP, MOBILE) and not (loopback and is_local and material.origin == api_origin):
             raise Blocked("invalid_client_origin")
         self.origin = material.origin
         self.api_origin, self._parsed = api_origin, parsed
         self._auth, self._timeout = material, timeout
+        self.capacity = concurrency
+        self._tls_context = ssl.create_default_context() if parsed.scheme == "https" else None
         self._pool = queue.LifoQueue(concurrency)
         for _ in range(concurrency):
             self._pool.put(None)
@@ -245,8 +253,81 @@ class NativeHttp:
     def _connection(self):
         if self._parsed.scheme == "https":
             return http.client.HTTPSConnection(self._parsed.hostname, self._parsed.port,
-                                               timeout=self._timeout, context=ssl.create_default_context())
+                                               timeout=self._timeout, context=self._tls_context)
         return http.client.HTTPConnection(self._parsed.hostname, self._parsed.port, timeout=self._timeout)
+
+    def dispatch_capacity(self, window):
+        """Enough bounded slots to cover the timeout at the selected call interval."""
+        return min(self.capacity, window.attempts, math.ceil(self._timeout * 1e9 / window.interval_ns) + 1)
+
+    def _release(self, conn, reusable):
+        with self._lock:
+            reusable = reusable and not self._closed
+            if conn is not None and not reusable:
+                conn.close()
+            self._pool.put_nowait(conn if reusable else None)
+
+    def warm_connections(self, count, deadline_ns):
+        """Prepare TCP/TLS only, with no HTTP request, before the timed window.
+
+        DNS/TLS setup is bounded by the pre-start deadline at the caller. A late
+        setup worker owns its connection until cleanup; failure prevents orders.
+        """
+        if not self.verified or not 1 <= count <= self.capacity:
+            raise Blocked("native_verification_required")
+        if time.perf_counter_ns() >= deadline_ns:
+            raise Blocked("connection_warmup_timeout")
+        errors = []
+        workers = []
+
+        # Reserve distinct pool entries while warming; a fast worker must not
+        # repeatedly borrow one already-warm LIFO connection for all slots.
+        borrowed = []
+        try:
+            for _ in range(count):
+                borrowed.append(self._pool.get_nowait())
+        except queue.Empty:
+            for conn in borrowed:
+                self._release(conn, True)
+            raise Blocked("connection_capacity_timeout") from None
+
+        def warm_slot(conn):
+            reusable = False
+            try:
+                conn = conn or self._connection()
+                if conn.sock is None:
+                    conn.connect()
+                reusable = True
+            except ssl.SSLError:
+                errors.append("tls_failure")
+            except TimeoutError:
+                errors.append("connection_warmup_timeout")
+            except (OSError, http.client.HTTPException):
+                errors.append("transport_failure")
+            except Exception:
+                errors.append("connection_warmup_failed")
+            finally:
+                self._release(conn, reusable)
+
+        try:
+            for conn in borrowed:
+                worker = threading.Thread(target=warm_slot, args=(conn,), daemon=True, name="native-connect")
+                worker.start()
+                workers.append(worker)
+        except RuntimeError:
+            self.verified = False
+            raise Blocked("connection_warmup_failed") from None
+        finally:
+            for conn in borrowed[len(workers):]:
+                self._release(conn, True)
+        for worker in workers:
+            worker.join(max(0, (deadline_ns - time.perf_counter_ns()) / 1e9))
+        if any(worker.is_alive() for worker in workers) or time.perf_counter_ns() >= deadline_ns:
+            self.verified = False
+            raise Blocked("connection_warmup_timeout")
+        if errors:
+            self.verified = False
+            raise Blocked(errors[0])
 
     def _exchange(self, method, path, body=None, before_request=None):
         with self._lock:
@@ -274,6 +355,8 @@ class NativeHttp:
             if conn.sock is not None:
                 conn.sock.settimeout(self._timeout)
             deadline = time.perf_counter() + self._timeout
+            if conn.sock is None:
+                conn.connect()
             if before_request is not None and not before_request():
                 raise Blocked("initiation_cancelled_or_cutoff")
             conn.request(method, path, body=body, headers=headers)
@@ -312,11 +395,7 @@ class NativeHttp:
         except (OSError, http.client.HTTPException):
             raise Blocked("transport_failure", status) from None
         finally:
-            with self._lock:
-                reusable = reusable and not self._closed
-                if conn is not None and not reusable:
-                    conn.close()
-                self._pool.put_nowait(conn if reusable else None)
+            self._release(conn, reusable)
 
     @staticmethod
     def _status(status):
@@ -553,12 +632,19 @@ def monotonic_target(target, *, now=None, clock=time.perf_counter_ns):
     return clock() + nanos
 
 
-def wait_until(deadline_ns, cancel, *, clock=time.perf_counter_ns):
+def wait_until(deadline_ns, cancel, *, clock=time.perf_counter_ns, pause=time.sleep):
     while not cancel.is_set():
         left = deadline_ns - clock()
         if left <= 0:
             return True
-        cancel.wait(min(left / 1_000_000_000, .05))
+        if left > 20_000_000:
+            cancel.wait(min((left - 20_000_000) / 1_000_000_000, .05))
+        else:
+            # CPython uses a high-resolution waitable timer for sleep on modern
+            # Windows. Avoid the coarser Event.wait timeout at the final deadline.
+            # This sleeps, never spins; cancellation latency here is at most the
+            # requested 20 ms sleep plus unbounded OS scheduling delay.
+            pause(left / 1_000_000_000)
     return False
 
 
@@ -577,6 +663,7 @@ class DispatchReport:
     capacity_skips: int = 0
     scheduled_attempts: int = 0
     non_initiated: list[str] = field(default_factory=list)
+    worker_capacity: int = 0
 
     def diagnostics(self):
         # Called only after scheduling and bounded draining. No payloads or IDs.
@@ -584,6 +671,7 @@ class DispatchReport:
         return {"theoretical_attempts": self.planned, "local_initiations": len(snapshot),
                 "stop": self.stop, "capacity_skips": self.capacity_skips,
                 "scheduled_attempts": self.scheduled_attempts,
+                "worker_capacity": self.worker_capacity,
                 "non_initiated_outcomes": list(self.non_initiated),
                 "http_responses_observed": sum(r is not None and r.status is not None for _, _, r in snapshot),
                 "broker_results_observed": sum(r is not None and r.acceptance != "unknown" for _, _, r in snapshot),
@@ -597,23 +685,28 @@ class DispatchReport:
 
 
 def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
-             concurrency=4, drain_seconds=4.0, clock=time.perf_counter_ns):
+             concurrency=4, drain_seconds=4.0, clock=time.perf_counter_ns, pause=time.sleep):
     """No response-driven scheduling, queue, catch-up, retry, or console work.
 
     submit(body, before_request) must call before_request immediately before
     handing the request to native HTTP, and refrain from sending if it is False.
     Workers signal that handoff before doing HTTP I/O. At most `concurrency`
-    workers exist; late worker starts are rechecked against the exclusive cutoff.
+    reusable workers start before waiting for the target. Each idle worker has
+    one inbox, so there is no backlog behind busy workers. Native calls are
+    rechecked against the exclusive cutoff, and paced from the actual previous
+    call timestamp rather than the scheduler's later notification time.
     Daemon workers retain ownership of unresolved requests after bounded drain.
     """
     if not approved:
         raise Blocked("explicit_confirmation_required")
-    if not 1 <= concurrency <= 16 or not math.isfinite(drain_seconds) or drain_seconds < 0:
+    if not 1 <= concurrency <= MAX_CONCURRENCY or not math.isfinite(drain_seconds) or drain_seconds < 0:
         raise Blocked("invalid_dispatch_limits")
     cancel = cancel or threading.Event()
-    report = DispatchReport(window.attempts)
+    concurrency = min(concurrency, window.attempts)
+    report = DispatchReport(window.attempts, worker_capacity=concurrency)
     cutoff, due = start_ns + window.duration_ns, start_ns
-    slots = threading.BoundedSemaphore(concurrency)
+    idle = queue.Queue(concurrency)
+    shutdown = threading.Event()
     lock = threading.Lock()
     workers = []
     last = None
@@ -649,39 +742,64 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
                     cancel.set()
         finally:
             ready.set()
-            slots.release()
+
+    def worker_loop(inbox, initialized):
+        idle.put_nowait(inbox)
+        initialized.set()
+        while True:
+            try:
+                ready = inbox.get(timeout=.05)
+            except queue.Empty:
+                if shutdown.is_set():
+                    return
+                continue
+            initiate(ready)
+            if shutdown.is_set():
+                return
+            idle.put_nowait(inbox)
 
     try:
+        for index in range(concurrency):
+            inbox, initialized = queue.Queue(1), threading.Event()
+            worker = threading.Thread(target=worker_loop, args=(inbox, initialized), daemon=True,
+                                      name=f"native-order-{index + 1}")
+            try:
+                worker.start()
+            except RuntimeError:
+                report.stop = "worker_start_failure"
+                cancel.set()
+                break
+            workers.append(worker)
+            if not initialized.wait(1):
+                report.stop = "worker_start_failure"
+                cancel.set()
+                break
         while not cancel.is_set() and clock() < cutoff:
-            if not wait_until(due, cancel, clock=clock) or clock() >= cutoff:
+            if not wait_until(due, cancel, clock=clock, pause=pause) or clock() >= cutoff:
                 break
             report.scheduled_attempts += 1
-            if not slots.acquire(blocking=False):
+            try:
+                inbox = idle.get_nowait()
+            except queue.Empty:
                 report.capacity_skips += 1
                 due = clock() + window.interval_ns
                 continue
             ready = threading.Event()
-            worker = threading.Thread(target=initiate, args=(ready,), daemon=True, name="native-order")
-            workers = [w for w in workers if w.is_alive()]
-            workers.append(worker)
-            try:
-                worker.start()
-            except RuntimeError:
-                slots.release()
-                report.stop = "worker_start_failure"
-                cancel.set()
-                break
+            initiated_before = len(report.attempts)
+            inbox.put_nowait(ready)
             while not ready.wait(.01):
                 if cancel.is_set() or clock() >= cutoff:
                     break
             with lock:
-                due = max(clock(), last if last is not None else due) + window.interval_ns
+                due = (last + window.interval_ns if len(report.attempts) > initiated_before
+                       else clock() + window.interval_ns)
         if cancel.is_set() and report.stop == "cutoff":
             report.stop = "cancelled_or_broker_stop"
     except KeyboardInterrupt:
         cancel.set()
         report.stop = "cancelled"
     finally:
+        shutdown.set()
         end = time.perf_counter() + drain_seconds
         for worker in workers:
             try:
@@ -694,6 +812,8 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
 
 
 def live_dispatch(client, approved_order, fresh, window, start_ns, *, confirmed=False, cancel=None):
+    if window.interval_ns < MIN_LIVE_INTERVAL_NS:
+        raise Blocked("live_interval_below_300_ms")
     if not confirmed or not client.live_enabled or not client.verified or fresh.order != approved_order:
         raise Blocked("live_authorization_or_preflight_failed")
     now = time.perf_counter_ns()
@@ -703,7 +823,7 @@ def live_dispatch(client, approved_order, fresh, window, start_ns, *, confirmed=
         raise Blocked("client_identity_changed")
     body = decimal_json(approved_order.payload(datetime.now().astimezone())).encode()
     return dispatch(lambda data, begin: client.submit(data, approved=True, on_initiated=begin), body, window, start_ns,
-                    approved=True, cancel=cancel)
+                    approved=True, cancel=cancel, concurrency=client.dispatch_capacity(window))
 
 
 def confirm_order():
@@ -771,6 +891,8 @@ def main(argv=None):
         target = local_target()
         window = Window.from_inputs(input("Duration seconds [5]: ").strip() or "5",
                                     input("Minimum interval milliseconds [350]: ").strip() or "350")
+        if args.live and window.interval_ns < MIN_LIVE_INTERVAL_NS:
+            raise Blocked("live_interval_below_300_ms")
         initial = preflight(client, draft, quantity, price)
         print("WARNING: " + MARKET_TIME_WARNING)
         order = initial.order
@@ -790,6 +912,7 @@ def main(argv=None):
         start_ns = monotonic_target(target)
         if not wait_until(start_ns - 5_000_000_000, cancel):
             raise Blocked("cancelled")
+        client.warm_connections(client.dispatch_capacity(window), start_ns)
         fresh = preflight(client, draft, quantity, price)
         report = live_dispatch(client, order, fresh, window, start_ns, confirmed=True, cancel=cancel)
         diagnostics.update(report.diagnostics())
