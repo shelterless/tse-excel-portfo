@@ -13,6 +13,10 @@ Run in VS Code's terminal:
     python POC/easytrader_poc.py --browser-draft-preview
     python POC/easytrader_poc.py --browser-draft-schedule 08:45:00
     python POC/easytrader_poc.py --browser-single-order 08:45:00
+    python POC/easytrader_poc.py --browser-single-order --live
+    python POC/easytrader_poc.py --live 08:45:00
+    python POC/easytrader_poc.py --live 08:45:00 --mobile
+    python POC/easytrader_poc.py --browser-order-contract
 Leave credentials below unchanged to enter them interactively with --login.
 Never commit real credentials. Cookies and tokens are held only in memory.
 With --browser-login, use the generated URL in a separate private browser
@@ -36,9 +40,25 @@ The terminal shows the selected details. The final report contains counts only.
 With --browser-draft-schedule HH:MM:SS, enter today's Tehran time before
 sign-in. The POC reads the desktop draft list and previews the whole snapshot
 at the target time without asking for a selection.
-With --browser-single-order [HH:MM:SS], select one draft as a BUY template,
-confirm a local timing rehearsal, and use today's Tehran target (08:45:00 by
-default). Live arming is blocked. Rehearsal timing uses only local clocks.
+With --browser-single-order [HH:MM:SS] [--mobile], preview ordinary BUY orders
+from one saved draft and fresh symbol, market, calendar and money data.
+Add --live to authorize repeated independent POSTs after Enter confirmation;
+Esc cancels before dispatch. Default invocation remains read-only.
+After verified login, the private window closes. Its session is transferred
+only in memory to headless Chrome; subsequent requests retain Chrome's fetch
+transport. No token, cookie or authentication state is written to a file.
+Select a draft and confirm quantity/price, then enter local hour/minute/second
+(defaults 08:44:58), duration (5 seconds) and dispatch gap (350 microseconds).
+The countdown displays six fractional digits. Windows/Chrome/network timing
+does not guarantee microsecond precision or broker arrival times.
+At the target, each POST starts without awaiting/checking any response.
+Each log line means a browser fetch was initiated, not broker acceptance.
+At the cutoff queued HTTP work is aborted and the browser exits; accepted
+orders are never cancelled. There is no automatic replay of a failed window.
+The user checks outcomes and manages any extra orders in the real panel.
+The draft is never changed/deleted. Reconciliation/fill tracking is omitted.
+With --browser-order-contract, sign in manually to the desktop site. The POC
+reports sanitized shapes of the site's order-list and server-time GETs.
 
 Evidence from 2026-11-03 (observations, not an authenticated contract test):
 * d.easytrader.ir main-ASDB7OPN.js and chunks CzUVj6D8 / Dgv-m_Jw:
@@ -59,10 +79,15 @@ https://github.com/Mahdi-mghs/AutoBuy-MofidBroker/blob/main/easy_api.py
 https://github.com/RezaMahdaviiDev/mofid/tree/main/src/brokerages/easy/api
 https://github.com/m-fazel/Sarkhati/blob/main/src/easy_trader.rs
 
-No direct order endpoint is callable. Missing: observed MFA form, OMS session setup,
-instrument identity/rules, market/calendar/status semantics, order payload and
-acceptance/status response semantics. A local order preview is NOT a broker
-payload. The timing preview does NOT establish a permitted market session.
+The legacy login/read/rehearsal modes do not submit orders. The explicit --live
+single-order workflow below implements the 2026-11-07 first-party contract:
+POST symbols/all with {"hash":"null"} returns {symbols: [...], hash: ...} and
+supplies buyCommission, hidePrice and csize; ordinary orderModelType
+is 1, desktop orderFrom is 34 and mobile is 33. The frontend BUY formula is
+ceil(quantity * (price * (1 + commission) + hidePrice) * (csize ?? 1)).
+Fresh marketdata/v2, TradingTime and startsession reads validate price, state
+and calendar. No live order is sent by self-tests, and no fill/status tracking
+or broker-clock precision is claimed by this disposable single-order workflow.
 
 RESUME CHECKPOINT -- 2026-11-03, PO requested continuation tomorrow:
 * Only this file was created; no existing project files were changed. No Git
@@ -157,17 +182,19 @@ QUANTITY = 0
 PRICE = 0
 
 TARGET_TIME = "08:45:00"
-LIVE_ORDER_ENABLED = False
-MAX_ORDER_VALUE_IRR = 5_000_000  # Notional only; no fee schedule is verified.
+LIVE_ORDER_ENABLED = False  # Legacy toggle stays off; --live plus per-order approval is the explicit gate.
+MAX_ORDER_VALUE_IRR = 5_000_000  # The new ordinary-order workflow caps the final value including fees.
 NETWORK_TIMEOUT_SECONDS = 15
 
 import base64
-from datetime import datetime
-from decimal import Decimal
+from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, localcontext
+from dataclasses import dataclass
 import getpass
 import hashlib
 from html.parser import HTMLParser
 import http.cookiejar
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -191,6 +218,22 @@ MOBILE_CALLBACK = MOBILE_ORIGIN + "/auth-callback"
 ACCOUNT_API_ORIGIN = "https://api-mts.orbis.easytrader.ir"
 MONEY_URL = ACCOUNT_API_ORIGIN + "/easy/api/money"
 DRAFT_URL = ACCOUNT_API_ORIGIN + "/easy/api/draft"
+SYMBOLS_URL = ACCOUNT_API_ORIGIN + "/symbols/api/symbols/all"
+# main-RMHHQAO7.jl/ei: POST {hash: "null"} for the uncached full symbol response.
+# "null" is the frontend's literal string, not JSON null. The response is {symbols: [...], hash: ...}.
+SYMBOLS_REQUEST_BODY = '{"hash":"null"}'
+# First-party nV.GetMarketData: POST an ISIN array; this is a data read, not an order.
+MARKET_DATA_URL = ACCOUNT_API_ORIGIN + "/symbols/api/marketdata/v2"
+TRADING_TIME_URL = ACCOUNT_API_ORIGIN + "/symbols/api/TradingTime"
+START_SESSION_URL = ACCOUNT_API_ORIGIN + "/easy/api/startsession"
+ORDER_URL = ACCOUNT_API_ORIGIN + "/core/api/v2/order"
+ORDERS_URL = ACCOUNT_API_ORIGIN + "/core/api/order"
+LIVE_BLOCKER = "The global live toggle is unsupported. Use --live and confirm the displayed order window."
+MAX_SYMBOL_RESPONSE_BYTES = 12_000_000
+PREFLIGHT_LEAD_SECONDS = 5
+MAX_PREFLIGHT_AGE_SECONDS = 15
+MAX_SUBMISSION_LATENESS_SECONDS = 2
+ORDER_RECONCILE_ATTEMPTS = 12  # Cover the frontend's five-second order refresh interval without another POST.
 SCOPE = "easy2_api mts_api openid profile login_delegation-api"
 MAX_RESPONSE_BYTES = 1_000_000
 BROWSER_READ_TIMEOUT_MS = 300_000
@@ -198,6 +241,18 @@ BROWSER_READ_TIMEOUT_MS = 300_000
 
 class Blocked(Exception):
     """A safe, non-secret diagnostic suitable for printing."""
+
+
+class BrowserTransportFailure(Blocked):
+    """The authenticated browser did not produce an HTTP response."""
+
+
+class DraftObservationTimeout(Blocked):
+    """No matching first-party draft response arrived after manual login/navigation."""
+
+
+class HttpResponseFailure(Blocked):
+    """An actual HTTP response has a failing status or unexpected media type."""
 
 
 def tehran_zone():
@@ -241,7 +296,7 @@ def seconds_until_target(now, target):
 
 def require_read_only_mode():
     if LIVE_ORDER_ENABLED is not False:
-        raise Blocked("Live submission is unavailable: instrument, session and order contracts remain unverified.")
+        raise Blocked(LIVE_BLOCKER)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -584,7 +639,8 @@ def check_money_response(status, headers, body):
     print("OMS session readiness and all trading contracts remain unverified; trading remains unavailable.")
 
 
-def observe_draft_reads(context, page, last_read, *, scheduled_at=None, manual_tab=False):
+def observe_draft_reads(context, page, last_read, *, scheduled_at=None, manual_tab=False, session=None,
+                        origin=DESKTOP_ORIGIN):
     def match_drafts(response):
         url = urllib.parse.urlsplit(response.url)
         if response.from_service_worker or url._replace(query="", fragment="").geturl() != DRAFT_URL:
@@ -596,20 +652,42 @@ def observe_draft_reads(context, page, last_read, *, scheduled_at=None, manual_t
         last_read.update(stage="browser-draft-read", origin=ACCOUNT_API_ORIGIN, path="/easy/api/draft",
                          method=method, http_status=response.status,
                          response_kind={"application/json": "json", "text/html": "html"}.get(media_type, "other"))
+        # Once authenticated, an HTTP error is a concrete response, not an observation timeout.
+        if (session is not None and method == "GET" and session.authenticated and
+                (response.status != 200 or media_type != "application/json")):
+            return True
         return method == "GET" and response.status == 200 and media_type == "application/json"
 
     timeout_ms = BROWSER_READ_TIMEOUT_MS
     if scheduled_at is None or manual_tab:
-        print("After sign-in, open the Drafts tab in the desktop orders panel if needed.")
+        print("Complete login/MFA in Chrome, then open Orders > Drafts in that SAME window.")
+        print("Waiting for the site's draft response automatically; do not press Enter in the terminal.")
     if scheduled_at is not None:
         remaining_ms = int((scheduled_at - datetime.now(tehran_zone())).total_seconds() * 1000)
         if remaining_ms <= 0:
             raise Blocked("Target time passed before the browser could observe drafts.")
         timeout_ms = min(timeout_ms, remaining_ms)
-    with context.expect_event("response", predicate=match_drafts, timeout=timeout_ms) as observed:
-        page.goto(DESKTOP_ORIGIN + "/", wait_until="commit", timeout=min(30_000, timeout_ms))
-        if scheduled_at is not None and not manual_tab:
-            page.locator('[data-cy="order-grid-tab-draft-order"]').click(timeout=timeout_ms)
+    try:
+        with context.expect_event("response", predicate=match_drafts, timeout=timeout_ms) as observed:
+            page.goto(origin + "/", wait_until="commit", timeout=min(30_000, timeout_ms))
+            if scheduled_at is not None and not manual_tab:
+                page.locator('[data-cy="order-grid-tab-draft-order"]').click(timeout=timeout_ms)
+    except Exception as exc:
+        if session is None:
+            raise
+        failure = session.last_failure("GET", DRAFT_URL)
+        if failure:
+            raise BrowserTransportFailure(f"Draft observation: {failure}") from None
+        if last_read.get("http_status") not in (None, 200):
+            raise HttpResponseFailure(f"Draft observation: HTTP {last_read['http_status']} from GET /easy/api/draft.") from None
+        if type(exc).__name__ == "TimeoutError":
+            raise DraftObservationTimeout("Draft observation timed out: no successful draft response after login/MFA and Orders > Drafts.") from None
+        raise BrowserTransportFailure("Draft observation: " + sanitized_exception(exc)) from None
+    if session is not None:
+        session.capture_response_auth(observed.value)
+        if (observed.value.status != 200 or
+                observed.value.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json"):
+            raise HttpResponseFailure(f"Draft observation: HTTP {observed.value.status} from GET /easy/api/draft.")
     body = observed.value.body()
     if len(body) > MAX_RESPONSE_BYTES:
         raise Blocked("Browser draft response exceeded the size limit.")
@@ -636,6 +714,10 @@ def observe_draft_reads(context, page, last_read, *, scheduled_at=None, manual_t
     }
     last_read["json_shape"] = shape
     print("Browser draft response observed. The report contains only metadata and selected field names.")
+    if session is not None:
+        if not isinstance(payload, list):
+            raise Blocked("Expected the proven root draft array.")
+        session.seed_drafts(payload)
     return payload
 
 
@@ -782,7 +864,60 @@ def rehearse_single_order(payload, buying_power, scheduled_at, report):
     print(f"Dry-run BUY preview: {symbol} | Quantity: {quantity} | Draft price: {price}.")
 
 
-def observe_browser(report, *, draft_discovery=False, scheduled_at=None, single_order=False):
+def observe_order_contract(context, page, report, browser_error):
+    snapshots = {}
+    order_path = "/core/api/order"
+    clock_path = "/easy/api/account/server-time/{client-ms}"
+
+    def collect(response):
+        if response.request.method != "GET" or response.from_service_worker:
+            return False
+        url = urllib.parse.urlsplit(response.url)
+        if (url.scheme, url.netloc) != ("https", "api-mts.orbis.easytrader.ir"):
+            return False
+        path = url.path
+        if re.fullmatch(r"/easy/api/account/server-time/[0-9]+", path):
+            path = clock_path
+        if path in (order_path, clock_path):
+            snapshots.setdefault(path, response)
+        return len(snapshots) == 2
+
+    def field_types(data, fields):
+        return {field: type(data[field]).__name__ for field in fields if field in data}
+
+    print("Waiting for the desktop site's order list and server time. Open Orders if needed.")
+    try:
+        with context.expect_event("response", predicate=collect, timeout=BROWSER_READ_TIMEOUT_MS):
+            page.goto(DESKTOP_ORIGIN + "/", wait_until="commit", timeout=30_000)
+    finally:
+        for path, response in snapshots.items():
+            media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            entry = {"stage": "browser-order-contract", "method": "GET", "path": path,
+                     "http_status": response.status, "json_object": False}
+            report.append(entry)
+            if response.status != 200 or media_type != "application/json":
+                continue
+            try:
+                body = response.body()
+                if len(body) > MAX_RESPONSE_BYTES:
+                    continue
+                data = json.loads(body, parse_float=Decimal)
+            except (browser_error, ValueError, RecursionError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            entry["json_object"] = True
+            if path == clock_path:
+                entry["field_types"] = field_types(data, ("serverTimestamp", "diff"))
+            else:
+                entry["field_types"] = field_types(data, ("orders", "algoSuffixCharacters"))
+                orders = data.get("orders")
+                if isinstance(orders, list) and orders and isinstance(orders[0], dict):
+                    entry["first_order_field_types"] = field_types(
+                        orders[0], ("id", "symbolIsin", "side", "price", "quantity", "orderState", "trades"))
+
+
+def observe_browser(report, *, draft_discovery=False, scheduled_at=None, single_order=False, order_contract=False):
     require_read_only_mode()
     try:
         from playwright.sync_api import Error, TimeoutError as BrowserTimeout, sync_playwright
@@ -828,6 +963,8 @@ def observe_browser(report, *, draft_discovery=False, scheduled_at=None, single_
                 context = browser.new_context()
                 page = context.new_page()
                 print("Sign in manually in the Chrome window. Complete any Authenticator challenge there.")
+                if order_contract:
+                    return observe_order_contract(context, page, report, Error)
                 if single_order:
                     context.on("response", capture_money)
                     payload = observe_draft_reads(context, page, last_read, scheduled_at=scheduled_at, manual_tab=True)
@@ -850,6 +987,8 @@ def observe_browser(report, *, draft_discovery=False, scheduled_at=None, single_
                 if browser.is_connected():
                     browser.close()
     except BrowserTimeout:
+        if order_contract:
+            raise Blocked("Timed out observing order-list and server-time GETs. See the sanitized report.") from None
         if draft_discovery or single_order:
             raise Blocked("Timed out waiting for a draft GET with HTTP 200 JSON. See the sanitized report.") from None
         if money_read:
@@ -901,6 +1040,955 @@ def authenticate_and_check(report, *, browser_redirect=None, open_chrome=False, 
         cookies.clear()
 
 
+def decimal_value(value, field, *, minimum=Decimal(0), positive=False):
+    """Parse API decimal strings without float coercion, NaN or silent defaults."""
+    if type(value) not in (int, str, Decimal):
+        raise Blocked(f"Missing/invalid {field}.")
+    try:
+        text = str(value).strip()
+        if len(text) > 50 or not re.fullmatch(r"[+-]?[0-9\u06f0-\u06f9\u0660-\u0669]+(?:\.[0-9\u06f0-\u06f9\u0660-\u0669]+)?", text):
+            raise ValueError
+        result = Decimal(text)
+        if (not result.is_finite() or result < minimum or (positive and result <= 0) or
+                result > Decimal("1e18") or result.as_tuple().exponent < -18):
+            raise ValueError
+        return result
+    except (ValueError, InvalidOperation):
+        raise Blocked(f"Missing/invalid {field}.") from None
+
+
+def whole_number(value, field, *, positive=True):
+    number = decimal_value(value, field, positive=positive)
+    if number != number.to_integral_value():
+        raise Blocked(f"{field} must be a whole number.")
+    return int(number)
+
+
+def is_decimal_multiple(number, step):
+    with localcontext() as ctx:
+        ctx.prec = 128
+        return number % step == 0
+
+
+def safe_text(value, limit=240):
+    """Allow a bounded diagnostic, suppressing credential-like values and controls."""
+    if not isinstance(value, str):
+        return ""
+    value = re.sub(r"(?i)bearer\s+\S+", "[redacted]", value)
+    value = re.sub(r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}", "[redacted]", value)
+    value = re.sub(r'''(?i)(?:access[_-]?token|refresh[_-]?token|token|password|cookie|authorization|client_secret|api[_-]?key|x-customheader|otp|code)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)''',
+                   "[redacted]", value)
+    value = re.sub(r"[A-Za-z0-9_+/=-]{40,}(?:\.[A-Za-z0-9_+/=-]+)*", "[redacted]", value)
+    return "".join(c for c in value if c.isprintable())[:limit]
+
+
+def sanitized_exception(exc):
+    # Never include a traceback, request headers, cookies or a response body.
+    text = str(exc).split("Call log:", 1)[0].split("\n", 1)[0]
+    text = re.sub(r"https?://[^\s\"']+", "[url]", text)
+    return safe_text(type(exc).__name__ + ": " + text, 320)
+
+
+class BrowserFetchResponse:
+    """Small response adapter for fetch executed by the signed-in Chrome page."""
+
+    def __init__(self, result):
+        if (not isinstance(result, dict) or type(result.get("status")) is not int or
+                not isinstance(result.get("body"), str) or not isinstance(result.get("contentType"), str)):
+            raise BrowserTransportFailure("Malformed browser-fetch result; no acknowledgement is assumed.")
+        self.status = result["status"]
+        self.headers = {"content-type": result["contentType"]}
+        self._body = result["body"].encode("utf-8")
+
+    def body(self):
+        return self._body
+
+    def dispose(self):
+        self._body = b""
+
+
+def exact_symbol(items, isin):
+    if not isinstance(items, list):
+        raise Blocked("Symbol API must return an array; its shape was not accepted.")
+    matches = [item for item in items if isinstance(item, dict) and item.get("symbolIsin") == isin]
+    if len(matches) != 1:
+        raise Blocked("Exactly one fresh symbol record must match the draft ISIN.")
+    return dict(matches[0])
+
+
+def symbol_details(payload, isin):
+    """Parse jl.fetchAllSymbols/ei.fetchAndUpdateSymbols, without using a cached hash."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("symbols"), list):
+        raise Blocked("symbols/all must return an object containing a symbols array.")
+    if not payload["symbols"]:
+        raise Blocked("The full symbol response is empty; cached or missing metadata cannot validate an order.")
+    return exact_symbol(payload["symbols"], isin)
+
+
+def tehran_datetime(value, field):
+    """Mirror the frontend's local interpretation of offset-free API date strings."""
+    try:
+        if type(value) is int:
+            result = datetime.fromtimestamp(value / 1000, tehran_zone())
+        elif isinstance(value, str):
+            result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if result.tzinfo is None:
+                result = result.replace(tzinfo=tehran_zone())
+        else:
+            raise ValueError
+        return result.astimezone(tehran_zone())
+    except (ValueError, OverflowError, OSError):
+        raise Blocked(f"Missing/invalid {field}; no calendar assumption was made.") from None
+
+
+def validate_trading_time(symbol, calendar, start_session, at):
+    """B9cqRonR.dt: Saturday=1; ordinary pre-trading/trading windows, end exclusive."""
+    if not isinstance(calendar, dict) or not isinstance(calendar.get("items"), list):
+        raise Blocked("TradingTime.items is missing.")
+    trading_type = whole_number(symbol.get("tradingTimeType"), "tradingTimeType")
+    rules = [r for r in calendar["items"] if isinstance(r, dict) and r.get("tradingTimeType") == trading_type]
+    if len(rules) != 1:
+        raise Blocked("Trading rules for this symbol are missing or ambiguous.")
+    if not isinstance(start_session, dict):
+        raise Blocked("A fresh startsession calendar response is required.")
+    server = tehran_datetime(start_session.get("serverTime"), "serverTime")
+    session = tehran_datetime(start_session.get("startSessionTimeStamp"), "startSessionTimeStamp")
+    local = at.astimezone(tehran_zone())
+    if server.date() != session.date() or local.date() != server.date():
+        raise Blocked("Target is not the current broker market-session date.")
+    rule = rules[0]
+    days = rule.get("days")
+    if (not isinstance(days, list) or not days or
+            any(type(day) is not int or not 1 <= day <= 7 for day in days)):
+        raise Blocked("Trading weekdays are missing/invalid.")
+    if (local.weekday() + 2) % 7 + 1 not in days:
+        raise Blocked("Target weekday is not permitted for this symbol.")
+    seconds = local.hour * 3600 + local.minute * 60 + local.second
+    windows = []
+    for start_key, end_key in (("startPreTradingTime", "endPreTradingTime"), ("startTradingTime", "endTradingTime")):
+        start, end = rule.get(start_key), rule.get(end_key)
+        if start_key == "startPreTradingTime" and start in (None, "") and end in (None, ""):
+            continue
+        if any(not isinstance(v, str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", v) for v in (start, end)):
+            raise Blocked("Missing/invalid ordinary trading window.")
+        a, b = (int(v[:2]) * 3600 + int(v[3:]) * 60 for v in (start, end))
+        if a > b:
+            raise Blocked("Overnight trading rules are unsupported by this same-day POC.")
+        windows.append((a, b))
+    if not any(a <= seconds < b for a, b in windows):
+        raise Blocked("Target is outside the symbol's ordinary order-entry windows.")
+
+
+@dataclass(frozen=True)
+class BuyOrder:
+    symbol_isin: str
+    symbol_name: str
+    quantity: int
+    price: Decimal
+    commission: Decimal
+    hide_price: Decimal
+    contract_size: Decimal
+    total_value: int
+    order_from: int
+
+    def payload(self, at):
+        # Observed frontend toLocaleString(en-US), using the selected Tehran clock.
+        local = at.astimezone(tehran_zone())
+        hour = local.hour % 12 or 12
+        stamp = (f"{local.month}/{local.day}/{local.year}, {hour}:{local.minute:02}:{local.second:02} "
+                 f"{'AM' if local.hour < 12 else 'PM'}")
+        return {"order": {"price": self.price, "quantity": self.quantity, "side": 0, "validityType": 0,
+                          "createDateTime": stamp, "commission": self.commission,
+                          "symbolIsin": self.symbol_isin, "symbolName": self.symbol_name,
+                          "orderModelType": 1, "totalValue": self.total_value, "orderFrom": self.order_from}}
+
+
+def build_buy_order(draft, symbol, market, buying_power, quantity, price, origin, at,
+                    calendar, start_session, limit=None):
+    """Build a fresh ordinary DAY BUY; never spread the draft's ID/state/timestamp."""
+    limit = MAX_ORDER_VALUE_IRR if limit is None else limit
+    isin = draft.get("symbolIsin")
+    if not isinstance(isin, str) or not re.fullmatch(r"[A-Z0-9]{12}", isin):
+        raise Blocked("A valid exact draft symbolIsin is required.")
+    if type(draft.get("side")) is not int or draft["side"] != 0:
+        raise Blocked("Only saved BUY drafts are supported.")
+    if type(draft.get("validityType", 0)) is not int or draft.get("validityType", 0) != 0:
+        raise Blocked("This ordinary BUY POC supports DAY validity only.")
+    if not isinstance(symbol, dict) or symbol.get("symbolIsin") != isin:
+        raise Blocked("Symbol metadata does not match the draft ISIN.")
+    if symbol.get("isActive") is not True or symbol.get("canBuy") is not True:
+        raise Blocked("Symbol is not explicitly active and buyable.")
+    unit = whole_number(symbol.get("marketUnit"), "marketUnit")
+    # Ordinary shares/rights and the frontend's ETF family; derivative contracts are excluded.
+    ordinary_units = {1, 2, 3, 4, 5, 6, 7, 8, 18, 19, 20, 31, 32, 39, 40, 41, 42, 43, 52, 54}
+    if unit not in ordinary_units:
+        raise Blocked("This market unit has no supported ordinary BUY contract in the POC.")
+    name = symbol.get("symbolName")
+    if not isinstance(name, str) or not name.strip() or len(name) > 80 or not name.replace("\u200c", "").isprintable():
+        raise Blocked("Invalid symbol name.")
+    if not isinstance(market, dict) or market.get("symbolIsin") != isin:
+        raise Blocked("Fresh market data must match the selected symbol exactly.")
+    # M6BdUGtp.zce identifies A/65 as permitted. Other/unknown states are not assumed tradable.
+    if str(market.get("stateCode", "")).strip() not in ("A", "65"):
+        raise Blocked("Symbol market state is halted, restricted or unknown.")
+    qty = whole_number(quantity, "quantity")
+    amount = decimal_value(price, "price", positive=True)
+    low = decimal_value(market.get("lowAllowedPrice"), "lowAllowedPrice")
+    high = decimal_value(market.get("highAllowedPrice"), "highAllowedPrice", positive=True)
+    tick = decimal_value(symbol.get("minDealablePrice"), "minDealablePrice", positive=True)
+    step = whole_number(symbol.get("minDealableCount"), "minDealableCount")
+    minimum = whole_number(symbol.get("minValidBuyVolume"), "minValidBuyVolume")
+    maximum = whole_number(symbol.get("maxValidBuyVolume"), "maxValidBuyVolume")
+    for key, chooser in (("minValidBuyVolume", max), ("maxValidBuyVolume", min)):
+        if key in market:
+            bound = whole_number(market[key], key)
+            if key.startswith("min"):
+                minimum = chooser(minimum, bound)
+            else:
+                maximum = chooser(maximum, bound)
+    if low > high or not low <= amount <= high or not is_decimal_multiple(amount, tick):
+        raise Blocked("Price is outside permitted bounds or is not a multiple of the price tick.")
+    if minimum > maximum or not minimum <= qty <= maximum or qty % step:
+        raise Blocked("Quantity is outside permitted bounds or is not a multiple of the quantity step.")
+    rate = decimal_value(symbol.get("buyCommission"), "buyCommission")
+    if rate >= 1:
+        raise Blocked("Invalid buy commission rate.")
+    hidden = decimal_value(symbol.get("hidePrice"), "hidePrice")
+    size = decimal_value(1 if symbol.get("csize") is None else symbol["csize"], "csize", positive=True)
+    # Enforce the verified frontend Ko minimum-buy helper as a conservative POC limit.
+    etfs = {3, 4, 5, 6, 7, 8, 31, 32, 39, 43, 52, 54}
+    base_market = {18, 19, 20, 40, 41, 42}
+    minimum_notional = 1_000_000 if unit in etfs else 50_000_000 if unit in base_market else 5_000_000
+    cap = decimal_value(limit, "MAX_ORDER_VALUE_IRR", positive=True)
+    funds = decimal_value(buying_power, "buyPowerT2 (IRR)")
+    with localcontext() as ctx:
+        ctx.prec = 128
+        if Decimal(qty) * (amount + hidden) < minimum_notional:
+            raise Blocked("Quantity is below the frontend minimum-buy value for this market unit.")
+        total = int((Decimal(qty) * (amount * (1 + rate) + hidden) * size).to_integral_value(rounding=ROUND_CEILING))
+    if total <= 0 or total > cap:
+        raise Blocked("Final order value including fees exceeds MAX_ORDER_VALUE_IRR.")
+    if Decimal(total) > funds:
+        raise Blocked("Insufficient buyPowerT2 for the final IRR order value including fees.")
+    if origin not in (DESKTOP_ORIGIN, MOBILE_ORIGIN):
+        raise Blocked("Unknown authenticated client context.")
+    validate_trading_time(symbol, calendar, start_session, at)
+    return BuyOrder(isin, name, qty, amount, rate, hidden, size, total, 34 if origin == DESKTOP_ORIGIN else 33)
+
+
+def decimal_json(value):
+    """Emit exact JSON numbers for Decimal; never convert monetary values to float."""
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise Blocked("Non-finite JSON number.")
+        return format(value, "f")
+    if isinstance(value, dict):
+        return "{" + ",".join(json.dumps(k) + ":" + decimal_json(v) for k, v in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(decimal_json(v) for v in value) + "]"
+    return json.dumps(value, ensure_ascii=True, allow_nan=False)
+
+
+class BrowserOrderSession:
+    """Explicit API reads plus one order POST; auth is captured in memory, never exported."""
+
+    def __init__(self, context, page, report=None):
+        self.context, self.page = context, page
+        self._auth_headers = {}
+        self.report = report
+        self._draft_snapshot = None
+        self._draft_consumed = False
+        self._authenticated_by_draft = False
+        self._authenticated_by_login = False
+        self._failures = {}
+
+    @property
+    def authenticated(self):
+        return self._authenticated_by_draft or self._authenticated_by_login or bool(self._auth_headers)
+
+    def attach_listeners(self):
+        # All listeners precede navigation/login and manual Orders > Drafts interaction.
+        self.context.on("request", self.capture_request)
+        self.context.on("response", self.observe_response)
+        self.context.on("requestfailed", self.observe_failure)
+
+    def _set_auth(self, headers):
+        if not isinstance(headers, dict):
+            return False
+        allowed = {"authorization", "x-device-id", "x-app-name", "x-customheader", "x-api-key", "shard"}
+        headers = {k.lower(): v for k, v in headers.items() if k.lower() in allowed}
+        auth = headers.get("authorization", "")
+        if not isinstance(auth, str) or not re.fullmatch(r"Bearer [A-Za-z0-9._~+/-]+=*", auth, re.I):
+            return False
+        if any(not isinstance(v, str) or len(v) > 20000 or "\r" in v or "\n" in v for v in headers.values()):
+            return False
+        self._auth_headers = headers
+        return True
+
+    def capture_request(self, request):
+        parsed = urllib.parse.urlsplit(request.url)
+        if f"{parsed.scheme}://{parsed.netloc}" != ACCOUNT_API_ORIGIN:
+            return False
+        # This property does not issue a nested protocol call from the event callback.
+        return self._set_auth(request.headers)
+
+    def capture_response_auth(self, response):
+        parsed = urllib.parse.urlsplit(response.url)
+        if f"{parsed.scheme}://{parsed.netloc}" != ACCOUNT_API_ORIGIN:
+            return False
+        headers = response.request.all_headers()
+        if (response.request.method == "GET" and parsed.path == "/easy/api/draft" and
+                response.status == 200 and isinstance(headers, dict) and
+                not any(k.lower() == "authorization" for k in headers)):
+            # A proven cookie-authenticated draft response does not require inventing a bearer token.
+            self._auth_headers = {}
+            return False
+        return self._set_auth(headers)
+
+    def observe_response(self, response):
+        parsed = urllib.parse.urlsplit(response.url)
+        if f"{parsed.scheme}://{parsed.netloc}" == ACCOUNT_API_ORIGIN:
+            self._failures.pop((response.request.method, parsed.path), None)
+
+    def observe_failure(self, request):
+        parsed = urllib.parse.urlsplit(request.url)
+        if f"{parsed.scheme}://{parsed.netloc}" == ACCOUNT_API_ORIGIN:
+            self._failures[(request.method, parsed.path)] = safe_text(request.failure or "browser request failed")
+
+    def last_failure(self, method, url):
+        return self._failures.get((method, urllib.parse.urlsplit(url).path))
+
+    def seed_drafts(self, payload):
+        if self._draft_snapshot is not None or self._draft_consumed:
+            raise Blocked("The saved draft snapshot has already been observed.")
+        self._draft_snapshot = payload
+        self._authenticated_by_draft = True
+
+    @property
+    def origin(self):
+        url = urllib.parse.urlsplit(self.page.url)
+        origin = f"{url.scheme}://{url.netloc}"
+        if origin not in (DESKTOP_ORIGIN, MOBILE_ORIGIN):
+            raise Blocked("The browser is not on an authenticated EasyTrader client page.")
+        return origin
+
+    def capture_auth(self, response):
+        url = urllib.parse.urlsplit(response.url)
+        if (response.request.method != "GET" or response.from_service_worker or response.status != 200 or
+                url._replace(query="", fragment="").geturl() != MONEY_URL or
+                response.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json"):
+            return False
+        return self.capture_response_auth(response)
+
+    def _request(self, method, url, body=None, *, draft_bootstrap=False):
+        reads = {MONEY_URL, TRADING_TIME_URL, START_SESSION_URL, ORDERS_URL}
+        if not ((method == "GET" and url in reads) or
+                (method == "POST" and url in (SYMBOLS_URL, MARKET_DATA_URL, ORDER_URL)) or
+                (draft_bootstrap and self._authenticated_by_login and method == "GET" and url == DRAFT_URL)):
+            raise Blocked("API operation is outside the POC allowlist.")
+        if url == SYMBOLS_URL and body != SYMBOLS_REQUEST_BODY:
+            raise Blocked("symbols/all requires the frontend's full-refresh POST body: hash is the string null.")
+        if not self.authenticated:
+            raise Blocked("An authenticated first-party draft response has not been observed.")
+        self.page.wait_for_timeout(0)  # Deliver queued app token-refresh/navigation events before copying headers.
+        self.origin  # Reject navigation away from the authenticated first-party client.
+        headers = {**self._auth_headers, "Accept": "application/json", "Cache-Control": "no-cache"}
+        if method == "POST":
+            headers["Content-Type"] = "application/json"
+        self._failures.pop((method, urllib.parse.urlsplit(url).path), None)
+        # APIRequestContext uses a different HTTP/TLS stack from Chrome. Keep both reads
+        # and the sole order POST in the proven signed-in browser network context.
+        script = """async ({url, method, headers, body, timeoutMs, maxBytes}) => {
+            const abort = new AbortController();
+            const timer = setTimeout(() => abort.abort(), timeoutMs);
+            try {
+                const response = await fetch(url, {method, headers,
+                    body: method === 'GET' ? undefined : body,
+                    credentials: 'include', redirect: 'error', cache: 'no-store', signal: abort.signal});
+                const reader = response.body?.getReader();
+                const chunks = []; let total = 0;
+                if (reader) { while (true) {
+                    const {done, value} = await reader.read();
+                    if (done) break;
+                    total += value.byteLength;
+                    if (total > maxBytes) { await reader.cancel(); throw new Error('Response exceeds size limit'); }
+                    chunks.push(value);
+                }}
+                const bytes = new Uint8Array(total); let offset = 0;
+                for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+                return {kind: 'response', status: response.status,
+                    contentType: response.headers.get('content-type') || '',
+                    body: new TextDecoder().decode(bytes)};
+            } catch (error) {
+                return {kind: 'browser-transport', name: error?.name || 'Error',
+                    message: String(error?.message || 'Browser fetch failed').slice(0, 400)};
+            } finally { clearTimeout(timer); }
+        }"""
+        try:
+            result = self.page.evaluate(script, {"url": url, "method": method, "headers": headers, "body": body,
+                                                "timeoutMs": NETWORK_TIMEOUT_SECONDS * 1000,
+                                                "maxBytes": MAX_SYMBOL_RESPONSE_BYTES if url == SYMBOLS_URL else MAX_RESPONSE_BYTES})
+        except Exception as exc:
+            raise BrowserTransportFailure(sanitized_exception(exc)) from None
+        if isinstance(result, dict) and result.get("kind") == "browser-transport":
+            detail = safe_text(str(result.get("name", "Error")) + ": " + str(result.get("message", "fetch failed")))
+            failure = self.last_failure(method, url)
+            raise BrowserTransportFailure(detail + ("; " + failure if failure else ""))
+        return BrowserFetchResponse(result)
+
+    def read(self, url, body=None):
+        method = "GET" if body is None else "POST"
+        if url == DRAFT_URL:
+            if body is not None or self._draft_snapshot is None or self._draft_consumed:
+                raise Blocked("Drafts must come from the proven browser-response observation, once per run.")
+            result, self._draft_snapshot = self._draft_snapshot, None
+            self._draft_consumed = True
+            return result
+        if url == ORDER_URL:
+            raise Blocked("An order cannot be submitted through the read API.")
+        return self._read_remote(url, body)
+
+    def load_drafts_after_login(self):
+        if self._draft_snapshot is not None or self._draft_consumed:
+            raise Blocked("Drafts have already been read for this run.")
+        payload = self._read_remote(DRAFT_URL, draft_bootstrap=True)
+        if not isinstance(payload, list):
+            raise Blocked("Expected the proven root draft array.")
+        self.seed_drafts(payload)
+
+    def _read_remote(self, url, body=None, *, draft_bootstrap=False):
+        method = "GET" if body is None else "POST"
+        response = None
+        path = urllib.parse.urlsplit(url).path
+        entry = {"stage": "single-order-read", "method": method, "path": path, "http_status": None}
+        started = time.perf_counter()
+        if self.report is not None:
+            self.report.append(entry)
+        try:
+            response = self._request(method, url, body, draft_bootstrap=draft_bootstrap)
+            entry["http_status"] = response.status
+            limit = MAX_SYMBOL_RESPONSE_BYTES if url == SYMBOLS_URL else MAX_RESPONSE_BYTES
+            return browser_json(response, limit)
+        except Blocked as exc:
+            entry["failure_kind"] = ("browser_transport" if isinstance(exc, BrowserTransportFailure)
+                                     else "http_response" if isinstance(exc, HttpResponseFailure) else "response_validation")
+            entry["error"] = safe_text(str(exc), 320)
+            raise type(exc)(f"{method} {path}: {exc}") from None
+        except Exception as exc:
+            entry["failure_kind"] = "browser_transport"
+            entry["error"] = sanitized_exception(exc)
+            raise BrowserTransportFailure(f"{method} {path}: {entry['error']}") from None
+        finally:
+            entry["latency_ms"] = round((time.perf_counter() - started) * 1000, 3)
+            if response is not None:
+                try:
+                    response.dispose()
+                except Exception:
+                    pass  # Disposal cannot invalidate the already-validated read.
+
+    def submit(self, body):
+        return self._request("POST", ORDER_URL, body)
+
+
+def browser_json(response, limit=MAX_RESPONSE_BYTES, *, require_success=True):
+    if ((require_success and not 200 <= response.status < 300) or
+            response.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json"):
+        raise HttpResponseFailure(f"Expected a successful JSON response (HTTP {response.status}).")
+    body = response.body()
+    if len(body) > limit:
+        raise Blocked("API response exceeded the permitted size.")
+    try:
+        return json.loads(body, parse_float=Decimal,
+                          parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+    except (ValueError, UnicodeError, RecursionError):
+        raise Blocked("Malformed API JSON; response details suppressed.") from None
+
+
+def read_buy_inputs(session, draft):
+    symbol = symbol_details(session.read(SYMBOLS_URL, SYMBOLS_REQUEST_BODY), draft["symbolIsin"])
+    market = exact_symbol(session.read(MARKET_DATA_URL, decimal_json([draft["symbolIsin"]])), draft["symbolIsin"])
+    money = session.read(MONEY_URL)
+    if not isinstance(money, dict):
+        raise Blocked("Money API must return an object.")
+    # main-RMHHQAO7.ai$3 maps buyPowerT2 directly to the form's IRR buying-power label.
+    funds = decimal_value(money.get("buyPowerT2"), "buyPowerT2 (IRR)")
+    calendar = session.read(TRADING_TIME_URL)
+    start_session = session.read(START_SESSION_URL)
+    return symbol, market, funds, calendar, start_session
+
+
+@contextlib.contextmanager
+def console_keys():
+    """Read Enter/Esc without requiring an extra newline; restore POSIX terminal state."""
+    if os.name == "nt":
+        import msvcrt
+        yield lambda wait=False: msvcrt.getwch() if wait or msvcrt.kbhit() else None
+    elif sys.stdin.isatty():
+        import select
+        import termios
+        import tty
+        descriptor = sys.stdin.fileno()
+        previous = termios.tcgetattr(descriptor)
+        try:
+            tty.setcbreak(descriptor)
+            yield lambda wait=False: sys.stdin.read(1) if wait or select.select([sys.stdin], [], [], 0)[0] else None
+        finally:
+            termios.tcsetattr(descriptor, termios.TCSADRAIN, previous)
+    else:
+        raise Blocked("Use an interactive console for Enter/Esc confirmation.")
+
+
+def check_console_cancel(read_key):
+    while True:
+        key = read_key()
+        if key is None:
+            return
+        if key in ("\x1b", "\x03"):
+            raise KeyboardInterrupt
+        if key == "":
+            raise EOFError
+
+
+def confirm_order():
+    print("ENTER to confirm these repeated orders; ESC to cancel.", flush=True)
+    with console_keys() as read_key:
+        while True:
+            key = read_key(True)
+            if key in ("\r", "\n"):
+                return True
+            if key == "\x1b":
+                return False
+            if key == "\x03":
+                raise KeyboardInterrupt
+            if key == "":
+                raise EOFError
+
+
+def local_now():
+    return datetime.now().astimezone()
+
+
+def prompt_order_time(default=None):
+    """Use today's system-local clock; do not ask for or synchronize a time zone."""
+    now = local_now()
+    defaults = (default.hour, default.minute, default.second) if default is not None else (8, 44, 58)
+    values = []
+    for label, fallback, maximum in zip(("Hour", "Minute", "Second"), defaults, (23, 59, 59)):
+        value = input(f"{label} [{fallback:02}]: ").strip() or str(fallback)
+        if not re.fullmatch(r"[0-9]{1,2}", value) or not 0 <= int(value) <= maximum:
+            raise Blocked(f"Invalid local {label.lower()}.")
+        values.append(int(value))
+    target = now.replace(hour=values[0], minute=values[1], second=values[2], microsecond=0)
+    if target <= local_now():
+        raise Blocked("Today's local target has passed; no next-day scheduling.")
+    return target
+
+
+@dataclass(frozen=True)
+class SubmissionWindow:
+    duration_ns: int
+    interval_ns: int
+
+
+def prompt_submission_window():
+    duration = decimal_value(input("Submission window in seconds [5]: ").strip() or "5", "submission window", positive=True)
+    interval = whole_number(input("Minimum dispatch gap, microseconds [350]: ").strip() or "350", "request gap")
+    nanos = duration * 1_000_000_000
+    if nanos != nanos.to_integral_value():
+        raise Blocked("Submission-window precision cannot exceed nanoseconds.")
+    return SubmissionWindow(int(nanos), interval * 1000)
+
+
+def submission_validation_time(symbol, calendar, start_session, target, window):
+    """Allow starting before opening only when this bounded window overlaps verified trading hours."""
+    end = target + timedelta(microseconds=window.duration_ns // 1000)
+    candidates = [target, end - timedelta(microseconds=1)]
+    local = target.astimezone(tehran_zone())
+    if isinstance(calendar, dict) and isinstance(calendar.get("items"), list):
+        for rule in calendar["items"]:
+            if not isinstance(rule, dict) or rule.get("tradingTimeType") != symbol.get("tradingTimeType"):
+                continue
+            for field in ("startPreTradingTime", "startTradingTime"):
+                value = rule.get(field)
+                if isinstance(value, str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
+                    candidate = local.replace(hour=int(value[:2]), minute=int(value[3:]), second=0, microsecond=0)
+                    if target <= candidate < end:
+                        candidates.append(candidate)
+    error = None
+    for candidate in sorted(candidates):
+        try:
+            validate_trading_time(symbol, calendar, start_session, candidate)
+            return candidate
+        except Blocked as exc:
+            error = exc
+    raise Blocked("The selected submission window does not overlap a verified trading session: " + str(error))
+
+
+def wait_local_target(target, session, *, display_target=None):
+    """Show six fractional digits on a monotonic countdown; this is not a timing guarantee."""
+    delay = (target - datetime.now(tehran_zone())).total_seconds()
+    if delay < -MAX_SUBMISSION_LATENESS_SECONDS:
+        raise Blocked("Selected Tehran time has passed; no order was submitted.")
+    deadline = time.monotonic_ns() + max(0, int(delay * 1_000_000_000))
+    display_offset = max(0, int(((display_target or target) - target).total_seconds() * 1_000_000_000))
+    next_display = 0
+    with console_keys() as read_key:
+        try:
+            while True:
+                check_console_cancel(read_key)
+                now = time.monotonic_ns()
+                remaining = max(0, deadline - now)
+                if now >= next_display or remaining == 0:
+                    micros = (remaining + display_offset) // 1000
+                    seconds, fraction = divmod(micros, 1_000_000)
+                    hours, seconds = divmod(seconds, 3600)
+                    minutes, seconds = divmod(seconds, 60)
+                    print(f"\rRemaining {hours:02}:{minutes:02}:{seconds:02}.{fraction:06} | ESC cancels", end="", flush=True)
+                    next_display = now + 50_000_000
+                if remaining == 0:
+                    return
+                if remaining > 2_000_000:
+                    session.page.wait_for_timeout(min(20, (remaining - 2_000_000) / 1_000_000))
+        finally:
+            print()
+
+
+class OneShotOrder:
+    def __init__(self):
+        self.attempted = False
+
+    def submit(self, session, order, target, report, *, approved=False):
+        if not approved or self.attempted:
+            raise Blocked("Exactly one explicitly approved order attempt is permitted per run.")
+        now = datetime.now(tehran_zone())
+        lateness = (now - target).total_seconds() if target is not None else None
+        if lateness is not None and (lateness < 0 or lateness > MAX_SUBMISSION_LATENESS_SECONDS):
+            raise Blocked("Dispatch is outside the selected Tehran time tolerance.")
+        if order.order_from != (34 if session.origin == DESKTOP_ORIGIN else 33):
+            raise Blocked("The authenticated client context changed after approval.")
+        body = decimal_json(order.payload(now))
+        self.attempted = True
+        entry = {"stage": "order-submit", "method": "POST", "path": "/core/api/v2/order",
+                 "request_start": now.isoformat(timespec="milliseconds"), "response_arrival": None,
+                 "http_status": None, "isSuccessful": None, "id": None, "message": None, "omsError": None,
+                 "error": "Submission outcome uncertain; never retry.", "acceptance": "UNCERTAIN",
+                 "latency_ms": None, "lateness_ms": round(lateness * 1000, 3) if lateness is not None else None,
+                 "mode": "SCHEDULED" if target is not None else "IMMEDIATE"}
+        report.append(entry)
+        started = time.perf_counter()
+        response = None
+        try:
+            response = session.submit(body)
+            entry["response_arrival"] = datetime.now(tehran_zone()).isoformat(timespec="milliseconds")
+            entry["http_status"] = response.status
+            data = browser_json(response, require_success=False)
+            if not isinstance(data, dict) or type(data.get("isSuccessful")) is not bool:
+                raise Blocked("Order acknowledgement lacks a boolean isSuccessful.")
+            entry["isSuccessful"] = data["isSuccessful"]
+            entry["message"] = safe_text(data.get("message"))
+            errors = data.get("omsError")
+            if isinstance(errors, list):
+                entry["omsError"] = [{"error": safe_text(e.get("error"))} for e in errors[:3] if isinstance(e, dict)]
+            elif isinstance(errors, str):
+                entry["omsError"] = safe_text(errors)
+            identifier = data.get("id")
+            if isinstance(identifier, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", identifier):
+                entry["id"] = identifier
+            if data["isSuccessful"]:
+                if not 200 <= response.status < 300:
+                    raise HttpResponseFailure(f"HTTP {response.status} conflicts with the successful acknowledgement; do not retry.")
+                if entry["id"] is None:
+                    raise Blocked("Successful acknowledgement has no valid order ID; do not retry.")
+                entry.update(acceptance="ACCEPTED", error=None)
+            else:
+                messages = [safe_text(data.get("message"))]
+                if isinstance(errors, list):
+                    messages += [safe_text(e.get("error")) for e in errors[:3] if isinstance(e, dict)]
+                entry.update(acceptance="REJECTED", error="; ".join(filter(None, messages)) or "Broker rejected the order.")
+        except Blocked as exc:
+            entry["error"] = safe_text(str(exc)) + " Submission outcome uncertain; never retry."
+        except Exception:
+            # Transport/parser exception strings can contain headers or private response data.
+            if entry["error"] is None:
+                entry["error"] = "Submission outcome uncertain; never retry."
+        finally:
+            entry["latency_ms"] = round((time.perf_counter() - started) * 1000, 3)
+            if response is not None:
+                try:
+                    response.dispose()
+                except Exception:
+                    pass  # Cleanup cannot change the acknowledgement or cause another submission.
+        return entry
+
+
+BURST_DISPATCH_SCRIPT = """({url, headers, body, startMs, durationMs, intervalMs}) => {
+    const start = performance.now() + (startMs - Date.now());
+    const end = start + durationMs;
+    const pending = [];
+    let next = start, count = 0;
+    try {
+        while (performance.now() < end) {
+            const now = performance.now();
+            if (now < next) continue;
+            const controller = new AbortController();
+            pending.push(controller);
+            const payload = body.replace('"createDateTime":"__POC_TIMESTAMP__"',
+                '"createDateTime":' + JSON.stringify(new Date().toLocaleString('en-US')));
+            if (performance.now() >= end) break;
+            // Each call is a distinct, pre-approved order; no response is awaited or retried.
+            void fetch(url, {method: 'POST', headers, body: payload, credentials: 'include',
+                redirect: 'error', cache: 'no-store', signal: controller.signal}).catch(() => {});
+            count++;
+            console.log('POC_DISPATCH ' + JSON.stringify({attempt: count, elapsed_us: Math.round((now - start) * 1000)}));
+            next = performance.now() + intervalMs;
+        }
+    } finally {
+        // Cancel queued HTTP work at the cutoff. This does NOT cancel an accepted brokerage order.
+        for (const controller of pending) controller.abort();
+    }
+    return {attempts: count, responses_checked: 0};
+}"""
+
+
+def dispatch_order_window(session, order, target, window, report, *, approved=False):
+    """Initiate independent orders only inside the authorized local-time window; never await responses."""
+    if not approved or not session.authenticated:
+        raise Blocked("A signed-in session and explicit confirmation are required.")
+    if window.duration_ns <= 0 or window.interval_ns <= 0:
+        raise Blocked("Submission duration and interval must be positive.")
+    if order.order_from != (34 if session.origin == DESKTOP_ORIGIN else 33):
+        raise Blocked("The authenticated client context changed after confirmation.")
+    body = order.payload(target)
+    body["order"]["createDateTime"] = "__POC_TIMESTAMP__"
+    headers = {**session._auth_headers, "Accept": "application/json", "Content-Type": "application/json",
+               "Cache-Control": "no-cache"}
+    records = []
+
+    def dispatched(message):
+        if message.type != "log" or not message.text.startswith("POC_DISPATCH "):
+            return
+        try:
+            data = json.loads(message.text[len("POC_DISPATCH "):])
+            attempt, elapsed = data["attempt"], data["elapsed_us"]
+            if (type(attempt) is not int or attempt != len(records) + 1 or
+                    type(elapsed) is not int or not 0 <= elapsed <= window.duration_ns // 1000 + 1):
+                return
+        except (ValueError, KeyError, TypeError):
+            return
+        entry = {"stage": "order-submit", "method": "POST", "path": "/core/api/v2/order",
+                 "attempt": attempt, "elapsed_us": elapsed, "acceptance": "UNOBSERVED",
+                 "isSuccessful": None, "id": None, "error": None}
+        records.append(entry)
+        report.append(entry)
+        print(f"{attempt:05} POST started | +{elapsed:09} us", flush=True)
+
+    session.page.on("console", dispatched)
+    try:
+        result = session.page.evaluate(BURST_DISPATCH_SCRIPT, {
+            "url": ORDER_URL, "headers": headers, "body": decimal_json(body),
+            "startMs": target.timestamp() * 1000, "durationMs": window.duration_ns / 1_000_000,
+            "intervalMs": window.interval_ns / 1_000_000})
+        if not isinstance(result, dict) or type(result.get("attempts")) is not int or result["attempts"] != len(records):
+            raise Blocked("Dispatch-log count could not be verified; outcomes remain unobserved. Do not replay the window.")
+    except Blocked:
+        raise
+    except Exception as exc:
+        raise BrowserTransportFailure("Dispatch interrupted; outcomes are unobserved. Do not replay. " + sanitized_exception(exc)) from None
+    finally:
+        session.page.remove_listener("console", dispatched)
+    return {"acceptance": "UNOBSERVED", "attempts": len(records), "responses_checked": 0}
+
+
+def reconcile_order(session, identifier, report):
+    """Poll only GET /core/api/order for the exact acknowledged ID; never resend."""
+    entry = {"stage": "order-reconcile", "method": "GET", "path": "/core/api/order",
+             "id": identifier, "found": False, "reads": 0, "error": None}
+    report.append(entry)
+    for attempt in range(ORDER_RECONCILE_ATTEMPTS):
+        entry["reads"] += 1
+        try:
+            payload = session.read(ORDERS_URL)
+            if not isinstance(payload, dict) or not isinstance(payload.get("orders"), list):
+                raise Blocked("Order list lacks the verified orders array.")
+            matches = [order for order in payload["orders"] if isinstance(order, dict) and order.get("id") == identifier]
+            if len(matches) > 1:
+                raise Blocked("Order list contains duplicate acknowledged IDs.")
+            if matches:
+                entry["found"] = True
+                print(f"Order-list reconciliation: FOUND exact order ID {identifier}. Execution/fills are not tracked.")
+                return entry
+        except Exception as exc:
+            entry["error"] = sanitized_exception(exc)
+            print("Order-list reconciliation unavailable: " + entry["error"] + " No order was resent.")
+            return entry
+        if attempt < ORDER_RECONCILE_ATTEMPTS - 1:
+            session.page.wait_for_timeout(500)
+    entry["error"] = "Acknowledged ID was not visible within the bounded read-only check. Do not resend."
+    print("Order-list reconciliation: NOT YET FOUND. Acknowledgement remains recorded; do not resend.")
+    return entry
+
+
+def single_order_workflow(session, target, report, *, live=False):
+    if target is not None and datetime.now(tehran_zone()) >= target:
+        raise Blocked("Today's target passed before the draft read.")
+    drafts = session.read(DRAFT_URL)  # One immutable selection snapshot; never re-read or delete drafts.
+    if not isinstance(drafts, list):
+        raise Blocked("Expected the observed saved-draft array.")
+    # Preserve the proven preview's row numbering, including non-BUY drafts.
+    details = draft_details(drafts)
+    buys = [dict(d) for d in drafts]
+    if not details:
+        raise Blocked("No saved BUY draft is available.")
+    for i, detail in enumerate(details, 1):
+        print(f"  {i}. {safe_text(detail, 200)}")
+    selection = input("One BUY draft number; Enter cancels: ").strip()
+    if not selection:
+        return
+    index = whole_number(selection, "draft selection")
+    if index > len(buys):
+        raise Blocked("Select exactly one listed BUY draft.")
+    draft = buys[index - 1]
+    if type(draft.get("side")) is not int or draft["side"] != 0:
+        raise Blocked("The selected saved draft must be a BUY; no order was submitted.")
+    inputs = read_buy_inputs(session, draft)
+    quantity = input(f"BUY quantity [{draft['quantity']}]: ").strip() or draft["quantity"]
+    price = input(f"BUY unit price in IRR [{draft['price']}]: ").strip() or draft["price"]
+    whole_number(quantity, "quantity")
+    decimal_value(price, "price", positive=True)
+    target = prompt_order_time(target)
+    window = prompt_submission_window()
+
+    def prepare(values):
+        symbol, market, funds, calendar, start_session = values
+        return build_buy_order(draft, symbol, market, funds, quantity, price, session.origin,
+                               submission_validation_time(symbol, calendar, start_session, target, window),
+                               calendar, start_session)
+
+    order = prepare(inputs)
+    print(f"BUY {order.symbol_name} | Quantity: {order.quantity} | Unit price: {order.price:,} IRR")
+    print(f"Total per order including commission: {order.total_value:,} IRR | Local start: {target:%H:%M:%S}")
+    print(f"Repeated independent orders for {window.duration_ns / 1_000_000_000:g}s; "
+          f"minimum dispatch gap {window.interval_ns / 1000:g} us. Responses will not be checked.")
+    print(f"Up to {(window.duration_ns + window.interval_ns - 1) // window.interval_ns:,} new order attempts; "
+          "each successful order is an additional purchase.")
+    if not live:
+        report.append({"stage": "single-order-preview", "selected_count": 1, "order_requests": 0})
+        return
+    if not confirm_order():
+        print("Cancelled before submission.")
+        return
+    if target is not None and datetime.now(tehran_zone()) >= target:
+        raise Blocked("Target passed before approval completed.")
+    if target is not None:
+        refresh_at = target - timedelta(seconds=PREFLIGHT_LEAD_SECONDS)
+        if datetime.now(tehran_zone()) < refresh_at:
+            wait_local_target(refresh_at, session, display_target=target)
+    checked_at = time.monotonic()
+    with console_keys() as read_key:
+        check_console_cancel(read_key)
+    fresh = read_buy_inputs(session, draft)
+    refreshed = prepare(fresh)
+    if refreshed != order:
+        raise Blocked("Order fields changed since approval; no POST was sent. Review a new preview.")
+    if target is not None:
+        wait_local_target(target, session)
+    now = datetime.now(tehran_zone())
+    if time.monotonic() - checked_at > MAX_PREFLIGHT_AGE_SECONDS:
+        raise Blocked("Final validation became stale; no order was submitted.")
+    if time.monotonic() - checked_at + window.duration_ns / 1_000_000_000 > MAX_PREFLIGHT_AGE_SECONDS:
+        raise Blocked("The submission window would exceed the verified preflight freshness limit.")
+    submission_validation_time(fresh[0], fresh[3], fresh[4], target, window)
+    with console_keys() as read_key:
+        check_console_cancel(read_key)
+    return dispatch_order_window(session, order, target, window, report, approved=True)
+
+
+def login_then_close_window(playwright, browser, report, browsers, origin):
+    """Transfer the authenticated session in memory; close the visible private window."""
+    context = browser.new_context(service_workers="block")
+    page = context.new_page()
+    session = BrowserOrderSession(context, page, report)
+    session.attach_listeners()
+
+    def signed_in(response):
+        return (response.request.method == "GET" and not response.from_service_worker and
+                response.url.split("?", 1)[0] == MONEY_URL and response.status == 200 and
+                response.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "application/json")
+
+    print("Sign in manually in Chrome and complete MFA/CAPTCHA. The private window closes automatically after login.")
+    with context.expect_event("response", predicate=signed_in, timeout=BROWSER_READ_TIMEOUT_MS) as observed:
+        page.goto(origin + "/", wait_until="commit", timeout=30_000)
+    response = observed.value
+    parse_buying_power(response.status, {"Content-Type": response.headers.get("content-type", "")}, response.body())
+    session.capture_response_auth(response)
+    session._authenticated_by_login = True
+    page.wait_for_load_state("domcontentloaded", timeout=30_000)
+    if session.origin != origin:
+        raise Blocked("Login did not return to the selected EasyTrader client.")
+    # No path is passed: cookies, OIDC state and session storage never go to disk or logs.
+    state = context.storage_state()
+    transient = page.evaluate("() => Object.fromEntries(Object.entries(sessionStorage))")
+    user_agent = page.evaluate("() => navigator.userAgent")
+    background = playwright.chromium.launch(channel="chrome", headless=True)
+    browsers.append(background)
+    hidden_context = background.new_context(service_workers="block", storage_state=state, user_agent=user_agent)
+    hidden_context.add_init_script("if (location.origin === " + json.dumps(origin) + ") {" +
+                                   "for (const [key, value] of Object.entries(" + json.dumps(transient) +
+                                   ")) sessionStorage.setItem(key, value);}")
+    # Close before any draft selection, quantity, price, time or confirmation prompt.
+    browser.close()
+    browsers.remove(browser)
+    session.context, session.page = hidden_context, hidden_context.new_page()
+    session.attach_listeners()
+    session.page.goto(origin + "/", wait_until="domcontentloaded", timeout=30_000)
+    state, transient = None, None
+    report.append({"stage": "browser-login", "http_status": response.status, "private_window_closed": True})
+    print("Login complete. Private window closed; session retained in memory.")
+    session.load_drafts_after_login()
+    return session
+
+
+def run_single_order_browser(target, report, *, live=False, mobile=False):
+    try:
+        from playwright.sync_api import Error, TimeoutError as BrowserTimeout, sync_playwright
+    except ImportError:
+        raise Blocked("This workflow requires the existing Playwright dependency.") from None
+    browsers = []
+    try:
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch(channel="chrome", headless=False)
+                browsers.append(browser)
+                session = login_then_close_window(playwright, browser, report, browsers,
+                                                 MOBILE_ORIGIN if mobile else DESKTOP_ORIGIN)
+                return single_order_workflow(session, target, report, live=live)
+            finally:
+                for active in reversed(browsers):
+                    if active.is_connected():
+                        try:
+                            active.close()
+                        except Exception as exc:
+                            # Cleanup cannot mask cancellation or an order acknowledgement.
+                            detail = sanitized_exception(exc)
+                            report.append({"stage": "browser-cleanup", "error": detail})
+                            print("Browser cleanup stopped: " + detail + ". No request was retried.")
+    except BrowserTimeout as exc:
+        raise BrowserTransportFailure("Browser timeout: " + sanitized_exception(exc)) from None
+    except Error as exc:
+        raise BrowserTransportFailure("Browser operation: " + sanitized_exception(exc)) from None
+
+
+def run_report(report):
+    attempts = [entry for entry in report if entry.get("stage") == "order-submit"]
+    last = attempts[-1] if attempts else None
+    return {"requests": report, "order_requests": len(attempts),
+            "order_id": last.get("id") if last else None,
+            "broker_order_response": {k: last.get(k) for k in ("isSuccessful", "id", "message", "omsError", "error", "http_status", "latency_ms")} if last else None,
+            "order_list_verified": last.get("order_list_verified") if last else None,
+            "acceptance": last["acceptance"] if last else "NOT_ATTEMPTED",
+            "execution": "NOT_TRACKED" if last else "NOT_ATTEMPTED"}
+
+
 def main(args=None):
     args = sys.argv[1:] if args is None else args
     if args == ["--self-test"]:
@@ -922,28 +2010,38 @@ def main(args=None):
     token_origin = token_origins.get(tuple(args))
     draft_preview = args == ["--browser-draft-preview"]
     draft_schedule = len(args) == 2 and args[0] == "--browser-draft-schedule"
-    single_order = len(args) in (1, 2) and args[0] == "--browser-single-order"
+    single_order = args[:1] == ["--browser-single-order"]
+    live = args[:1] == ["--live"]
+    order_contract = args == ["--browser-order-contract"]
     draft_send = args[:1] == ["--browser-draft-send"]
     browser_observation = args in (["--browser-read"], ["--browser-drafts"]) or draft_preview or draft_schedule
     if (args and args != ["--login"] and browser_redirect is None and token_origin is None
-            and not browser_observation and not single_order and not draft_send):
+            and not browser_observation and not single_order and not draft_send and not order_contract and not live):
         print("Usage: python POC/easytrader_poc.py "
               "[--self-test | --login | --browser-login [--mobile] [--open-chrome] "
               "[--compare-browser-token] | --browser-token [--mobile] | --browser-read | --browser-drafts "
-              "| --browser-draft-preview | --browser-draft-schedule HH:MM:SS | --browser-single-order [HH:MM:SS]]")
+              "| --browser-draft-preview | --browser-draft-schedule HH:MM:SS | --browser-single-order [HH:MM:SS] "
+              "| --browser-order-contract | --live [HH:MM:SS] [--mobile]]")
         return 2
     report = []
     try:
         require_read_only_mode()
+        if args[:1] in (["--browser-single-order"], ["--live"]):
+            flags = [part for part in args[1:] if part.startswith("--")]
+            times = [part for part in args[1:] if not part.startswith("--")]
+            if (len(times) > 1 or len(flags) != len(set(flags)) or
+                    any(flag not in ("--mobile", "--live") for flag in flags) or
+                    (args[0] == "--live" and "--live" in flags)):
+                raise Blocked("Use --browser-single-order [HH:MM:SS] [--mobile] [--live], or --live [HH:MM:SS] [--mobile].")
+            target = tehran_target(datetime.now(tehran_zone()), times[0]) if times else None
+            result = run_single_order_browser(target, report, live=args[0] == "--live" or "--live" in flags,
+                                              mobile="--mobile" in flags)
+            return 0 if result is None or result.get("acceptance") in ("ACCEPTED", "UNOBSERVED") else 2
         if draft_send:
             raise Blocked("Direct group send is disabled until the EasyTrader API contract is verified.")
         print("Read-only POC mode.")
-        if single_order:
-            target = args[1] if len(args) == 2 else TARGET_TIME
-            scheduled_at = tehran_target(datetime.now(tehran_zone()), target)
-            print(f"Single-order rehearsal target: {scheduled_at.isoformat()}.")
-            payload, buying_power = observe_browser(report, scheduled_at=scheduled_at, single_order=True)
-            rehearse_single_order(payload, buying_power, scheduled_at, report)
+        if order_contract:
+            observe_browser(report, order_contract=True)
         elif draft_schedule:
             scheduled_at = tehran_target(datetime.now(tehran_zone()), args[1])
             print(f"Scheduled draft rehearsal for {scheduled_at.isoformat()}.")
@@ -970,15 +2068,17 @@ def main(args=None):
         print("STOP:", exc)
         return 2
     except (KeyboardInterrupt, EOFError):
-        print("Cancelled. No order request was sent.")
+        print("Interrupted; submission may be uncertain. Do not retry." if run_report(report)["order_requests"]
+              else "Cancelled. No order request was sent.")
         return 130
     except (ValueError, UnicodeError):
         print("STOP: malformed authentication response; sensitive details suppressed.")
         return 2
     finally:
-        print(json.dumps({"requests": report, "order_requests": 0,
-                          "order_id": None, "broker_order_response": None,
-                          "acceptance": "NOT_ATTEMPTED", "execution": "NOT_ATTEMPTED"}, ensure_ascii=True))
+        summary = run_report(report)
+        if single_order or live:
+            summary = {"order_requests": summary["order_requests"], "acceptance": summary["acceptance"]}
+        print(json.dumps(summary, ensure_ascii=True))
 
 
 def self_test():
@@ -1305,46 +2405,19 @@ def self_test():
                         sleep.assert_not_called()
                         self.assertEqual(report["requests"], [])
 
-        def test_single_order_rehearses_only_one_corrected_buy_at_the_default_target(self):
-            first = {"id": "fixture-id-one", "symbolName": "FIXTURE ONE", "quantity": 10, "price": 100, "side": 0}
-            second = {**first, "id": "fixture-id-two", "symbolName": "FIXTURE TWO", "side": 1}
-            ready = datetime.fromisoformat("2026-11-04T08:44:59+03:30")
-            target = datetime.fromisoformat("2026-11-04T08:45:00+03:30")
-            target_ns = int(target.timestamp()) * 1_000_000_000
-            output = io.StringIO()
-            with patch(__name__ + ".datetime", wraps=datetime) as clock, \
-                 patch(__name__ + ".observe_browser", return_value=([first, second], 731953)) as observe, \
-                 patch("builtins.input", side_effect=["۲", "۳", "REHEARSE"]) as prompt, \
-                 patch("time.time_ns", side_effect=[target_ns - 10_000_000, target_ns + 500_000]), \
-                 patch("time.perf_counter_ns", side_effect=[100_000_000, 100_000_000, 105_000_000, 110_500_000]), \
-                 patch("time.sleep") as sleep, contextlib.redirect_stdout(output):
-                clock.now.return_value = ready
-                self.assertEqual(main(["--browser-single-order"]), 0)
-            observe.assert_called_once()
-            self.assertEqual(observe.call_args.kwargs, {"scheduled_at": target, "single_order": True})
-            self.assertEqual(prompt.call_count, 3)
-            self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.01, 0.005])
-            preview_lines = [line for line in output.getvalue().splitlines() if line.startswith("Dry-run BUY preview:")]
-            self.assertEqual(preview_lines, ["Dry-run BUY preview: FIXTURE TWO | Quantity: 3 | Draft price: 100."])
-            report = json.loads(output.getvalue().splitlines()[-1])
-            self.assertEqual(report["order_requests"], 0)
-            self.assertIsNone(report["order_id"])
-            self.assertIsNone(report["broker_order_response"])
-            self.assertEqual((report["acceptance"], report["execution"]), ("NOT_ATTEMPTED", "NOT_ATTEMPTED"))
-            self.assertEqual(len(report["requests"]), 1)
-            rehearsal = report["requests"][0]
-            self.assertEqual(rehearsal["selected_count"], 1)
-            self.assertFalse(rehearsal["live_armed"])
-            self.assertEqual(rehearsal["funds_check"], "UNVERIFIED")
-            self.assertEqual(rehearsal["broker_clock"],
-                             {"status": "UNVERIFIED", "offset_ns": None, "uncertainty_ns": None})
-            self.assertEqual(rehearsal["local_start_unix_ns"], target_ns - 10_000_000)
-            self.assertEqual(rehearsal["local_preview_unix_ns"], target_ns + 500_000)
-            self.assertEqual(rehearsal["local_target_delta_ns"], 500_000)
-            self.assertEqual(rehearsal["elapsed_monotonic_ns"], 10_500_000)
-            self.assertNotIn("731953", output.getvalue())
-            self.assertNotIn("fixture-id", output.getvalue())
-            self.assertNotIn("FIXTURE TWO", output.getvalue().splitlines()[-1])
+        def test_single_order_cli_defaults_to_preview_and_routes_explicit_live(self):
+            ready = datetime.fromisoformat("2026-11-07T08:40:00+03:30")
+            target = tehran_target(ready, "08:45:00")
+            for args, live, mobile in ((["--browser-single-order"], False, False),
+                                       (["--browser-single-order", "--live"], True, False),
+                                       (["--live", "08:45:00"], True, False),
+                                       (["--browser-single-order", "08:45:00", "--live", "--mobile"], True, True)):
+                with self.subTest(args=args), patch(__name__ + ".datetime", wraps=datetime) as clock, \
+                     patch(__name__ + ".run_single_order_browser", return_value=None) as run, \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    clock.now.return_value = ready
+                    self.assertEqual(main(args), 0)
+                    run.assert_called_once_with(None if args in (["--browser-single-order"], ["--browser-single-order", "--live"]) else target, [], live=live, mobile=mobile)
 
         def test_single_order_rejects_invalid_selection_cap_and_zero_funds(self):
             draft = {"id": "fixture-id", "symbolName": "TEST", "quantity": 1, "price": 100, "side": 0}
@@ -1369,35 +2442,21 @@ def self_test():
                     rehearse_single_order(drafts, funds, target, [])
                 sleep.assert_not_called()
 
-        def test_single_order_cancellation_expiry_and_live_toggle_do_not_wait(self):
-            draft = {"id": "fixture-id", "symbolName": "TEST", "quantity": 1, "price": 100, "side": 0}
-            ready = datetime.fromisoformat("2026-11-04T12:19:59+03:30")
-            target = tehran_target(ready, "12:20:00")
-            late = datetime.fromisoformat("2026-11-04T12:20:01+03:30")
-            args = ["--browser-single-order", "12:20:00"]
-            for timestamps, answers, enable_live, exit_code, observe_count in (
-                ([ready, ready, ready], ["1", "", "ARM"], False, 0, 1),
-                ([ready, ready, ready], ["1", "", "REHEARSE"], False, 2, 1),
-                ([ready, ready, late], ["1", ""], False, 2, 1),
-                ([ready, late], [], False, 2, 1),
-                ([late], [], False, 2, 0),
-                ([], [], True, 2, 0),
-            ):
-                with self.subTest(timestamps=timestamps, answers=answers, enable_live=enable_live):
-                    output = io.StringIO()
-                    with patch(__name__ + ".datetime", wraps=datetime) as clock, \
-                         patch(__name__ + ".LIVE_ORDER_ENABLED", enable_live), \
-                         patch(__name__ + ".observe_browser", return_value=([draft], None)) as observe, \
-                         patch("builtins.input", side_effect=answers) as prompt, \
-                         patch("time.time_ns", return_value=int(target.timestamp()) * 1_000_000_000), \
-                         patch("time.sleep") as sleep, contextlib.redirect_stdout(output):
-                        clock.now.side_effect = timestamps
-                        self.assertEqual(main(args), exit_code)
-                    self.assertEqual(observe.call_count, observe_count)
-                    self.assertEqual(prompt.call_count, len(answers))
-                    sleep.assert_not_called()
-                    self.assertNotIn("Dry-run BUY preview:", output.getvalue())
-                    self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["order_requests"], 0)
+        def test_single_order_cli_rejects_expiry_flags_and_global_toggle(self):
+            ready = datetime.fromisoformat("2026-11-07T09:00:00+03:30")
+            for args, enabled in ((["--live", "08:45:00"], False),
+                                  (["--live", "10:00:00", "--live"], False),
+                                  (["--browser-single-order", "10:00:00", "--unknown"], False),
+                                  (["--browser-single-order", "10:00:00"], True)):
+                with self.subTest(args=args, enabled=enabled), \
+                     patch(__name__ + ".datetime", wraps=datetime) as clock, \
+                     patch(__name__ + ".LIVE_ORDER_ENABLED", enabled), \
+                     patch(__name__ + ".run_single_order_browser") as run, \
+                     patch("builtins.input") as prompt, contextlib.redirect_stdout(io.StringIO()):
+                    clock.now.return_value = ready
+                    self.assertEqual(main(args), 2)
+                    run.assert_not_called()
+                    prompt.assert_not_called()
 
         def test_single_order_browser_observes_each_read_once_and_ignores_order_responses(self):
             def response(url, body, method="GET", status=200):
@@ -1463,27 +2522,768 @@ def self_test():
 
         def test_single_order_browser_timeout_does_not_repeat_observation(self):
             api = MagicMock(Error=RuntimeError, TimeoutError=TimeoutError)
-            playwright = api.sync_playwright.return_value.__enter__.return_value
-            browser = playwright.chromium.launch.return_value
+            browser = api.sync_playwright.return_value.__enter__.return_value.chromium.launch.return_value
             context = browser.new_context.return_value
             context.expect_event.return_value.__exit__.side_effect = TimeoutError("fixture-private")
-            ready = datetime.fromisoformat("2026-11-04T08:44:00+03:30")
+            with patch.dict(sys.modules, {"playwright.sync_api": api}), \
+                 contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(Blocked, "Timed out waiting for a draft GET"):
+                observe_browser([], single_order=True)
+            context.expect_event.assert_called_once()
+            browser.close.assert_called_once()
+
+        def test_order_contract_reports_only_allowlisted_fields_from_first_party_gets(self):
+            def response(path, body, *, origin=ACCOUNT_API_ORIGIN, method="GET", status=200):
+                item = Mock(url=origin + path, status=status, from_service_worker=False,
+                            headers={"content-type": "application/json"})
+                item.request.method = method
+                item.body.return_value = body
+                return item
+
+            order_path = "/core/api/order"
+            clock_path = "/easy/api/account/server-time/1793823448062"
+            for clock_status, clock_body, expected_clock_fields in (
+                (200, b'{"serverTimestamp":1793823448062,"diff":3,"token":"fixture-private"}',
+                 {"serverTimestamp": "int", "diff": "int"}),
+                (200, b'{"fixture-private":', None),
+                (403, b'{"serverTimestamp":1793823448062}', None),
+            ):
+                with self.subTest(clock_status=clock_status, expected_clock_fields=expected_clock_fields):
+                    api = MagicMock(Error=RuntimeError, TimeoutError=TimeoutError)
+                    browser = api.sync_playwright.return_value.__enter__.return_value.chromium.launch.return_value
+                    context = browser.new_context.return_value
+                    page = context.new_page.return_value
+                    orders = response(order_path, b'{"orders":[{"id":"fixture-private","orderState":7,"trades":[]}]}')
+                    clock = response(clock_path, clock_body, status=clock_status)
+                    ignored = [response(order_path, b'{}', method="POST"),
+                               response(order_path, b'{}', origin="https://example.com"),
+                               response("/core/api/v2/order", b'{}', method="POST")]
+
+                    def navigate(*args, **kwargs):
+                        predicate = context.expect_event.call_args.kwargs["predicate"]
+                        for item in ignored:
+                            self.assertFalse(predicate(item))
+                        self.assertFalse(predicate(orders))
+                        self.assertTrue(predicate(clock))
+
+                    page.goto.side_effect = navigate
+                    output = io.StringIO()
+                    with patch.dict(sys.modules, {"playwright.sync_api": api}), contextlib.redirect_stdout(output):
+                        self.assertEqual(main(["--browser-order-contract"]), 0)
+                    for item in ignored:
+                        item.body.assert_not_called()
+                    orders.body.assert_called_once_with()
+                    self.assertEqual(clock.body.call_count, int(clock_status == 200))
+                    browser.close.assert_called_once()
+                    self.assertNotIn("fixture-private", output.getvalue())
+                    self.assertNotIn("1793823448062", output.getvalue())
+                    report = json.loads(output.getvalue().splitlines()[-1])
+                    self.assertEqual(report["order_requests"], 0)
+                    order_read, clock_read = report["requests"]
+                    self.assertEqual(order_read["field_types"], {"orders": "list"})
+                    self.assertEqual(order_read["first_order_field_types"],
+                                     {"id": "str", "orderState": "int", "trades": "list"})
+                    self.assertEqual(clock_read["path"], "/easy/api/account/server-time/{client-ms}")
+                    self.assertEqual(clock_read["http_status"], clock_status)
+                    self.assertEqual(clock_read["field_types"] if "field_types" in clock_read else None,
+                                     expected_clock_fields)
+
+        def test_live_cli_reports_actual_dispatch_count_without_claiming_acceptance(self):
+            def run(target, report, **kwargs):
+                report.extend([{"stage": "order-submit", "acceptance": "UNOBSERVED"} for _ in range(3)])
+                return {"acceptance": "UNOBSERVED", "attempts": 3}
             output = io.StringIO()
+            with patch(__name__ + ".run_single_order_browser", side_effect=run), contextlib.redirect_stdout(output):
+                self.assertEqual(main(["--browser-single-order", "--live"]), 0, output.getvalue())
+            self.assertEqual(json.loads(output.getvalue().splitlines()[-1]), {"order_requests": 3, "acceptance": "UNOBSERVED"})
+
+        def buy_fixture(self):
+            at = datetime.fromisoformat("2026-11-07T09:00:00+03:30")
+            draft = {"id": "fixture-draft", "symbolIsin": "IRT1TEST0001", "symbolName": "OLD NAME",
+                     "price": 56593, "quantity": 22, "side": 0, "validityType": 0,
+                     "orderModelType": 2, "createDateTime": "old-draft-time", "easyState": 8}
+            symbol = {"symbolIsin": draft["symbolIsin"], "symbolName": "FIXTURE", "isActive": True,
+                      "canBuy": True, "marketUnit": 4, "buyCommission": "0.00036875", "hidePrice": 0,
+                      "csize": None, "minDealablePrice": 1, "minDealableCount": 1,
+                      "minValidBuyVolume": 1, "maxValidBuyVolume": 1_000_000, "tradingTimeType": 13}
+            market = {"symbolIsin": draft["symbolIsin"], "stateCode": "A", "lowAllowedPrice": 54825,
+                      "highAllowedPrice": 58215, "minValidBuyVolume": 1, "maxValidBuyVolume": 1_000_000}
+            calendar = {"items": [{"tradingTimeType": 13, "days": [1, 2, 3, 4, 5],
+                                   "startPreTradingTime": "08:45", "endPreTradingTime": "09:00",
+                                   "startTradingTime": "09:00", "endTradingTime": "15:00"}]}
+            start = {"serverTime": "2026-11-07T08:59:00+03:30", "startSessionTimeStamp": "2026-11-07T08:30:00+03:30"}
+            return at, draft, symbol, market, calendar, start
+
+        def fixture_order(self, *, quantity=22, price=56593, origin=DESKTOP_ORIGIN, **kwargs):
+            at, draft, symbol, market, calendar, start = self.buy_fixture()
+            return build_buy_order(draft, symbol, market, Decimal(10_000_000), quantity, price,
+                                   origin, at, calendar, start, **kwargs)
+
+        def json_response(self, data, status=200):
+            response = Mock(status=status, headers={"content-type": "application/json"})
+            response.body.return_value = json.dumps(data).encode()
+            return response
+
+        def workflow_session(self):
+            at, draft, symbol, market, calendar, start = self.buy_fixture()
+            session = Mock(origin=DESKTOP_ORIGIN)
+            def read(url, body=None):
+                if url == DRAFT_URL:
+                    return [dict(draft), {**draft, "id": "fixture-sell", "side": 1}]
+                if url == SYMBOLS_URL:
+                    self.assertEqual(body, '{"hash":"null"}')
+                    return {"symbols": [dict(symbol)], "hash": "fixture-hash"}
+                if url == MARKET_DATA_URL:
+                    self.assertEqual(json.loads(body), [draft["symbolIsin"]])
+                    return [dict(market)]
+                if url == MONEY_URL:
+                    return {"buyPowerT2": 10_000_000}
+                if url == TRADING_TIME_URL:
+                    return calendar
+                if url == START_SESSION_URL:
+                    return start
+                if url == ORDERS_URL:
+                    return {"orders": [{"id": "fixture-order", "symbolIsin": draft["symbolIsin"]}]}
+                self.fail("Unexpected read/write endpoint")
+            session.read.side_effect = read
+            session.submit.return_value = self.json_response({"isSuccessful": True, "id": "fixture-order", "message": "", "omsError": None})
+            return at, session
+
+        @contextlib.contextmanager
+        def scheduled_console(self, target, key="\r"):
+            with patch(__name__ + ".prompt_order_time", return_value=target), \
+                 patch(__name__ + ".prompt_submission_window", return_value=SubmissionWindow(5_000_000_000, 350_000)), \
+                 patch(__name__ + ".console_keys", return_value=contextlib.nullcontext(lambda wait=False: key if wait else None)):
+                yield
+
+        def test_new_order_sources_decimal_formula_and_draft_immutability(self):
+            import copy
+            at, draft, symbol, market, calendar, start = self.buy_fixture()
+            original = copy.deepcopy((draft, symbol, market))
+            for quantity, price, expected in ((20, 56592, 1132258), (22, 56593, 1245506)):
+                order = build_buy_order(draft, symbol, market, 10_000_000, quantity, price,
+                                        DESKTOP_ORIGIN, at, calendar, start)
+                payload = order.payload(at)["order"]
+                self.assertEqual(order.total_value, expected)
+                self.assertEqual(order.contract_size, Decimal(1))
+                self.assertEqual(payload["commission"], Decimal("0.00036875"))
+                self.assertEqual(payload["symbolName"], "FIXTURE")
+                self.assertEqual((payload["orderModelType"], payload["orderFrom"], payload["side"], payload["validityType"]), (1, 34, 0, 0))
+                self.assertEqual(payload["createDateTime"], "11/7/2026, 9:00:00 AM")
+                self.assertTrue({"id", "easyState", "validityDate"}.isdisjoint(payload))
+                serialized = decimal_json({"order": payload})
+                self.assertIn('"commission":0.00036875', serialized)
+                self.assertEqual(json.loads(serialized, parse_float=Decimal)["order"]["price"], price)
+            self.assertEqual((draft, symbol, market), original)
+            self.assertEqual(self.fixture_order(origin=MOBILE_ORIGIN).order_from, 33)
+
+        def test_total_formula_uses_hidden_price_size_and_ceiling_without_float(self):
+            at, draft, symbol, market, calendar, start = self.buy_fixture()
+            symbol.update(hidePrice="0.0123456789", csize="1.0000000001")
+            order = build_buy_order(draft, symbol, market, 10_000_000, 22, 56593,
+                                    DESKTOP_ORIGIN, at, calendar, start)
+            self.assertEqual(order.total_value, 1245506)
+            symbol.update(hidePrice=100, csize=2)
+            order = build_buy_order(draft, symbol, market, 10_000_000, 22, 56593,
+                                    DESKTOP_ORIGIN, at, calendar, start)
+            self.assertEqual(order.total_value, 2495411)
+            for funds, cap in ((1245505, 5_000_000), (10_000_000, 1245046)):
+                with self.assertRaises(Blocked):
+                    build_buy_order(draft, {**symbol, "hidePrice": 0, "csize": None}, market, funds,
+                                    22, 56593, DESKTOP_ORIGIN, at, calendar, start, limit=cap)
+
+        def test_new_order_fails_closed_on_missing_rules_flags_bounds_and_unknown_context(self):
+            cases = [({"isActive": False}, {}), ({"canBuy": "true"}, {}), ({"buyCommission": None}, {}),
+                     ({"buyCommission": "NaN"}, {}), ({"buyCommission": "1"}, {}), ({"hidePrice": None}, {}),
+                     ({"csize": 0}, {}), ({"marketUnit": 45}, {}), ({"marketUnit": 999}, {}),
+                     ({"minDealablePrice": 10}, {}), ({"minDealableCount": 3}, {}),
+                     ({"minValidBuyVolume": 23}, {}), ({"maxValidBuyVolume": 21}, {}),
+                     ({}, {"highAllowedPrice": 56592}), ({}, {"lowAllowedPrice": None}),
+                     ({}, {"stateCode": "I"}), ({}, {"stateCode": "unknown"}), ({}, {"maxValidBuyVolume": 21})]
+            for symbol_changes, market_changes in cases:
+                at, draft, symbol, market, calendar, start = self.buy_fixture()
+                with self.subTest(symbol=symbol_changes, market=market_changes), self.assertRaises(Blocked):
+                    build_buy_order(draft, {**symbol, **symbol_changes}, {**market, **market_changes},
+                                    10_000_000, 22, 56593, DESKTOP_ORIGIN, at, calendar, start)
+            at, draft, symbol, market, calendar, start = self.buy_fixture()
+            for changes in ({"side": 1}, {"side": False}, {"validityType": 1}, {"symbolIsin": "wrong"}):
+                with self.subTest(changes=changes), self.assertRaises(Blocked):
+                    build_buy_order({**draft, **changes}, symbol, market, 10_000_000, 22, 56593,
+                                    DESKTOP_ORIGIN, at, calendar, start)
+            for value in (None, True, 1.1, "NaN", "Infinity", "1,2", "-1"):
+                with self.subTest(value=value), self.assertRaises(Blocked):
+                    decimal_value(value, "fixture", positive=True)
+            for items in ([], [symbol, symbol], {"unknown": [symbol]}, [{**symbol, "symbolIsin": "wrong"}]):
+                with self.assertRaises(Blocked):
+                    exact_symbol(items, draft["symbolIsin"])
+            self.assertEqual(decimal_value("0", "zero fee"), Decimal(0))
+
+        def test_symbols_frontend_post_contract_uses_signed_in_page_and_wrapped_response(self):
+            _, draft, symbol, *_ = self.buy_fixture()
+            self.assertEqual(SYMBOLS_URL, "https://api-mts.orbis.easytrader.ir/symbols/api/symbols/all")
+            self.assertEqual(json.loads(SYMBOLS_REQUEST_BODY), {"hash": "null"})
+            context, page, report = Mock(), Mock(url=DESKTOP_ORIGIN + "/orders"), []
+            session = BrowserOrderSession(context, page, report)
+            session.seed_drafts([draft])
+            session._set_auth({"authorization": "Bearer fixture-secret", "x-device-id": "fixture-device",
+                               "x-app-name": "fixture-app", "cookie": "fixture-cookie"})
+            page.evaluate.return_value = {
+                "kind": "response", "status": 200, "contentType": "application/json; charset=utf-8",
+                "body": json.dumps({"symbols": [{**symbol, "symbolIsin": "unrelated"}, symbol], "hash": "fixture-hash"})}
+            result = symbol_details(session.read(SYMBOLS_URL, SYMBOLS_REQUEST_BODY), draft["symbolIsin"])
+            self.assertEqual(result, symbol)
+            script, options = page.evaluate.call_args.args
+            self.assertEqual((options["method"], options["url"], options["body"]),
+                             ("POST", SYMBOLS_URL, '{"hash":"null"}'))
+            self.assertEqual(options["headers"]["Content-Type"], "application/json")
+            self.assertEqual(options["headers"]["authorization"], "Bearer fixture-secret")
+            self.assertEqual(options["headers"]["x-device-id"], "fixture-device")
+            self.assertEqual(options["headers"]["x-app-name"], "fixture-app")
+            self.assertNotIn("cookie", options["headers"])
+            self.assertIn("credentials: 'include'", script)
+            self.assertEqual(options["maxBytes"], MAX_SYMBOL_RESPONSE_BYTES)
+            self.assertEqual(report[0]["http_status"], 200)
+            self.assertEqual(run_report(report)["order_requests"], 0)
+            self.assertNotIn("fixture-secret", json.dumps(report))
+            context.request.get.assert_not_called()
+            context.request.post.assert_not_called()
+
+        def test_symbols_response_requires_full_wrapped_array_and_exact_isin(self):
+            _, draft, symbol, *_ = self.buy_fixture()
+            for payload in ([symbol], {}, {"symbols": None}, {"symbols": {}}, {"symbols": []},
+                            {"symbols": [symbol, symbol]},
+                            {"symbols": [{**symbol, "symbolIsin": symbol["symbolIsin"] + "-suffix"}]},
+                            {"symbols": [{**symbol, "symbolIsin": "different", "companyIsin": symbol["symbolIsin"]}]}):
+                with self.subTest(payload=payload), self.assertRaises(Blocked):
+                    symbol_details(payload, draft["symbolIsin"])
+            result = symbol_details({"symbols": [symbol], "hash": "fixture-hash"}, draft["symbolIsin"])
+            self.assertIsNot(result, symbol)
+            self.assertEqual(result["buyCommission"], symbol["buyCommission"])
+
+        def test_symbols_405_failure_stops_before_approval_without_retry_or_order(self):
+            _, draft, *_ = self.buy_fixture()
+            # Reproduce the observed 405 as an HTTP failure, never as missing symbol data.
+            with self.assertRaisesRegex(HttpResponseFailure, "HTTP 405"):
+                browser_json(self.json_response({"message": "Method Not Allowed"}, 405))
+            for content_type in ("application/json", "text/html"):
+                context, page, report = Mock(), Mock(url=DESKTOP_ORIGIN + "/orders"), []
+                session = BrowserOrderSession(context, page, report)
+                session.seed_drafts([{**draft, "id": "fixture-" + str(i), "quantity": 23} for i in range(4)])
+                page.evaluate.return_value = {"kind": "response", "status": 405, "contentType": content_type,
+                                              "body": "fixture-private-response"}
+                with self.subTest(content_type=content_type), patch("builtins.input", return_value="4") as prompt, \
+                     contextlib.redirect_stdout(io.StringIO()), \
+                     self.assertRaisesRegex(HttpResponseFailure, "POST /symbols/api/symbols/all:.*HTTP 405"):
+                    single_order_workflow(session, None, report, live=True)
+                page.evaluate.assert_called_once()
+                self.assertEqual(page.evaluate.call_args.args[1]["method"], "POST")
+                prompt.assert_called_once()  # Only draft selection, no approval after failed validation.
+                self.assertEqual(report[0]["http_status"], 405)
+                self.assertEqual(report[0]["failure_kind"], "http_response")
+                self.assertEqual(run_report(report)["order_requests"], 0)
+                self.assertNotIn("fixture-private-response", json.dumps(report))
+                context.request.get.assert_not_called()
+                context.request.post.assert_not_called()
+
+        def test_symbols_get_and_conditional_cache_requests_are_blocked_locally(self):
+            session = BrowserOrderSession(Mock(), Mock(url=DESKTOP_ORIGIN + "/orders"))
+            session.seed_drafts([])
+            with self.assertRaisesRegex(Blocked, "allowlist"):
+                session.read(SYMBOLS_URL)  # The old GET that produced HTTP 405 must not be sent.
+            for body in ('{}', '{"hash":null}', '{"hash":"fixture-cached-hash"}', '["IRT1TEST0001"]'):
+                with self.subTest(body=body), self.assertRaisesRegex(Blocked, "full-refresh POST body"):
+                    session.read(SYMBOLS_URL, body)
+            session.page.evaluate.assert_not_called()
+
+        def test_calendar_uses_broker_day_and_verified_windows_with_exclusive_end(self):
+            import copy
+            at, _, symbol, _, calendar, start = self.buy_fixture()
+            validate_trading_time(symbol, calendar, start, at.replace(hour=8, minute=45))
+            for moment in (at.replace(hour=8, minute=44), at.replace(hour=15), at + timedelta(days=1)):
+                with self.assertRaises(Blocked):
+                    validate_trading_time(symbol, calendar, start, moment)
+            for changes in ({"days": []}, {"days": [True]}, {"days": [2]}, {"startTradingTime": "bad"}):
+                altered = copy.deepcopy(calendar)
+                altered["items"][0].update(changes)
+                with self.assertRaises(Blocked):
+                    validate_trading_time(symbol, altered, start, at)
+            with self.assertRaises(Blocked):
+                validate_trading_time(symbol, calendar, {**start, "startSessionTimeStamp": "2026-11-06T08:30:00"}, at)
+
+        def test_preview_keeps_draft_snapshot_and_shows_per_order_total_without_dispatch(self):
+            at, session = self.workflow_session()
+            report, output = [], io.StringIO()
+            with self.scheduled_console(at), patch(__name__ + ".datetime", wraps=datetime) as clock,           patch("builtins.input", side_effect=["1", "23", "56594"]),           patch(__name__ + ".dispatch_order_window") as dispatch, contextlib.redirect_stdout(output):
+                clock.now.return_value = at - timedelta(minutes=1)
+                single_order_workflow(session, None, report)
+            dispatch.assert_not_called()
+            session.submit.assert_not_called()
+            self.assertEqual(sum(c.args[0] == DRAFT_URL for c in session.read.call_args_list), 1)
+            self.assertEqual(session.read.call_count, 6)
+            self.assertIn("Quantity: 23", output.getvalue())
+            self.assertIn("Unit price: 56,594", output.getvalue())
+            self.assertIn("Total per order including commission", output.getvalue())
+            self.assertNotIn("fixture-draft", output.getvalue())
+            self.assertEqual(run_report(report)["order_requests"], 0)
+
+        def test_scheduled_workflow_revalidates_then_dispatches_one_authorized_window(self):
+            at, session = self.workflow_session()
+            current, report = [at - timedelta(minutes=1)], []
+            def wait(target, active, **kwargs):
+                self.assertIs(active, session)
+                current[0] = target
+            with self.scheduled_console(at), patch(__name__ + ".datetime", wraps=datetime) as clock,           patch(__name__ + ".wait_local_target", side_effect=wait) as timer,           patch(__name__ + ".dispatch_order_window", return_value={"acceptance": "UNOBSERVED"}) as dispatch,           patch("builtins.input", side_effect=["1", "", ""]), contextlib.redirect_stdout(io.StringIO()):
+                clock.now.side_effect = lambda *_: current[0]
+                result = single_order_workflow(session, None, report, live=True)
+            self.assertEqual(result["acceptance"], "UNOBSERVED")
+            dispatch.assert_called_once()
+            self.assertTrue(dispatch.call_args.kwargs["approved"])
+            self.assertEqual(dispatch.call_args.args[2], at)
+            self.assertEqual(dispatch.call_args.args[3], SubmissionWindow(5_000_000_000, 350_000))
+            self.assertEqual(sum(c.args[0] == DRAFT_URL for c in session.read.call_args_list), 1)
+            self.assertEqual(sum(c.args[0] == SYMBOLS_URL for c in session.read.call_args_list), 2)
+            self.assertEqual(session.read.call_count, 11)
+            self.assertEqual(timer.call_count, 2)
+            session.submit.assert_not_called()
+
+        def test_escape_or_changed_preflight_cannot_start_dispatch(self):
+            at, session = self.workflow_session()
+            original_read, count = session.read.side_effect, [0]
+            def changed_read(url, body=None):
+                result = original_read(url, body)
+                if url == SYMBOLS_URL:
+                    count[0] += 1
+                    if count[0] == 2:
+                        result["symbols"][0]["buyCommission"] = "0.0004"
+                return result
+            session.read.side_effect = changed_read
+            with self.scheduled_console(at), patch(__name__ + ".datetime", wraps=datetime) as clock,           patch(__name__ + ".wait_local_target"), patch(__name__ + ".dispatch_order_window") as dispatch,           patch("builtins.input", side_effect=["1", "", ""]), contextlib.redirect_stdout(io.StringIO()),           self.assertRaisesRegex(Blocked, "changed since approval"):
+                clock.now.return_value = at - timedelta(seconds=20)
+                single_order_workflow(session, at, [], live=True)
+            dispatch.assert_not_called()
+            at, session = self.workflow_session()
+            with self.scheduled_console(at, key="\x1b"), patch(__name__ + ".datetime", wraps=datetime) as clock,           patch("builtins.input", side_effect=["1", "", ""]),           patch(__name__ + ".wait_local_target") as wait, patch(__name__ + ".dispatch_order_window") as dispatch,           contextlib.redirect_stdout(io.StringIO()):
+                clock.now.return_value = at - timedelta(seconds=20)
+                single_order_workflow(session, at, [], live=True)
+            dispatch.assert_not_called()
+            wait.assert_not_called()
+
+        def test_sender_ack_errors_uncertainty_and_no_second_attempt(self):
+            at, *_ = self.buy_fixture()
+            cases = [({"isSuccessful": True, "id": "fixture-order"}, 200, "ACCEPTED"),
+                     ({"isSuccessful": False, "message": "Rejected", "omsError": [{"error": "bad quantity"}]}, 400, "REJECTED"),
+                     ({"isSuccessful": True, "id": "bad\nid"}, 200, "UNCERTAIN"),
+                     ({"isSuccessful": True, "id": "fixture-order"}, 500, "UNCERTAIN"),
+                     ({"message": "unknown"}, 200, "UNCERTAIN")]
+            for data, status, expected in cases:
+                session = Mock(origin=DESKTOP_ORIGIN)
+                session.submit.return_value = self.json_response(data, status)
+                sender, report = OneShotOrder(), []
+                with self.subTest(status=status, data=data), patch(__name__ + ".datetime", wraps=datetime) as clock:
+                    clock.now.return_value = at
+                    result = sender.submit(session, self.fixture_order(), at, report, approved=True)
+                    self.assertEqual(result["acceptance"], expected)
+                    with self.assertRaises(Blocked):
+                        sender.submit(session, self.fixture_order(), at, report, approved=True)
+                session.submit.assert_called_once()
+                self.assertEqual(run_report(report)["order_requests"], 1)
+            session = Mock(origin=DESKTOP_ORIGIN)
+            session.submit.side_effect = TimeoutError("Bearer fixture-private-token")
+            sender, report = OneShotOrder(), []
+            with patch(__name__ + ".datetime", wraps=datetime) as clock:
+                clock.now.return_value = at
+                self.assertEqual(sender.submit(session, self.fixture_order(), at, report, approved=True)["acceptance"], "UNCERTAIN")
+                with self.assertRaises(Blocked):
+                    sender.submit(session, self.fixture_order(), at, report, approved=True)
+            session.submit.assert_called_once()
+            self.assertNotIn("fixture-private-token", json.dumps(report))
+
+        def test_sender_requires_approval_context_and_on_time_dispatch(self):
+            at, *_ = self.buy_fixture()
+            for approved, now, origin in ((False, at, DESKTOP_ORIGIN),
+                                           (True, at - timedelta(seconds=1), DESKTOP_ORIGIN),
+                                           (True, at + timedelta(seconds=3), DESKTOP_ORIGIN),
+                                           (True, at, MOBILE_ORIGIN)):
+                session, report = Mock(origin=origin), []
+                with self.subTest(approved=approved, now=now, origin=origin), \
+                     patch(__name__ + ".datetime", wraps=datetime) as clock, self.assertRaises(Blocked):
+                    clock.now.return_value = now
+                    OneShotOrder().submit(session, self.fixture_order(), at, report, approved=approved)
+                session.submit.assert_not_called()
+                self.assertEqual(run_report(report)["order_requests"], 0)
+
+        def test_browser_transport_reuses_only_memory_auth_and_has_no_redirects_or_retries(self):
+            context, page = Mock(), Mock(url=DESKTOP_ORIGIN + "/")
+            session = BrowserOrderSession(context, page)
+            response = Mock(url=MONEY_URL, status=200, from_service_worker=False,
+                            headers={"content-type": "application/json"})
+            response.request.method = "GET"
+            response.request.all_headers.return_value = {"authorization": "Bearer fixture-secret", "cookie": "fixture-cookie"}
+            self.assertTrue(session.capture_auth(response))
+            context.request.get.side_effect = AssertionError("APIRequestContext is not the Chrome transport")
+            page.evaluate.return_value = {"kind": "response", "status": 200, "contentType": "application/json",
+                                          "body": '{"buyPowerT2":5000000}'}
+            self.assertEqual(session.read(MONEY_URL)["buyPowerT2"], 5_000_000)
+            script, options = page.evaluate.call_args.args
+            self.assertIn("credentials: 'include'", script)
+            self.assertIn("redirect: 'error'", script)
+            self.assertEqual(script.count("await fetch("), 1)
+            self.assertNotIn("cookie", options["headers"])
+            self.assertNotIn("Origin", options["headers"])
+            context.request.get.assert_not_called()
+            for url in (ORDER_URL, "https://example.com/", DRAFT_URL + "/fixture-id"):
+                with self.assertRaises(Blocked):
+                    session.read(url)
+            context.request.post.assert_not_called()
+            with self.assertRaises(Blocked):
+                session._request("DELETE", DRAFT_URL)
+            with self.assertRaises(Blocked):
+                session._request("POST", DRAFT_URL, "{}")
+
+        def test_browser_cleanup_runs_after_workflow_or_failure_without_close_prompt(self):
+            at, *_ = self.buy_fixture()
+            for failure in (False, True):
+                api = MagicMock(Error=RuntimeError, TimeoutError=TimeoutError)
+                browser = api.sync_playwright.return_value.__enter__.return_value.chromium.launch.return_value
+                with self.subTest(failure=failure), patch.dict(sys.modules, {"playwright.sync_api": api}),               patch(__name__ + ".login_then_close_window", return_value=Mock()),               patch(__name__ + ".single_order_workflow", side_effect=Blocked("fixture") if failure else None) as run,               patch("builtins.input", side_effect=AssertionError("No CLOSE prompt")), contextlib.redirect_stdout(io.StringIO()):
+                    if failure:
+                        with self.assertRaises(Blocked):
+                            run_single_order_browser(at, [], live=True)
+                    else:
+                        run_single_order_browser(at, [], live=True)
+                run.assert_called_once()
+                browser.close.assert_called_once()
+
+        def test_browser_close_driver_failure_preserves_result_and_sanitizes_error(self):
+            api = MagicMock(Error=RuntimeError, TimeoutError=TimeoutError)
+            browser = api.sync_playwright.return_value.__enter__.return_value.chromium.launch.return_value
+            browser.close.side_effect = Exception("Connection closed; Authorization: Bearer fixture-secret")
+            report, output = [], io.StringIO()
+            with patch.dict(sys.modules, {"playwright.sync_api": api}),           patch(__name__ + ".login_then_close_window", return_value=Mock()),           patch(__name__ + ".single_order_workflow", return_value={"acceptance": "UNOBSERVED"}),           contextlib.redirect_stdout(output):
+                self.assertEqual(run_single_order_browser(None, report, live=True), {"acceptance": "UNOBSERVED"})
+            self.assertEqual(report[-1]["stage"], "browser-cleanup")
+            self.assertNotIn("fixture-secret", json.dumps(report) + output.getvalue())
+
+        def test_error_sanitization_never_exports_credentials_or_raw_acknowledgement(self):
+            message = 'Rejected; authorization: Bearer fixture-secret; "access_token": "another-secret"'
+            self.assertNotIn("fixture-secret", safe_text(message))
+            self.assertNotIn("another-secret", safe_text(message))
+            self.assertNotIn("fixture-cookie", safe_text("cookie=fixture-cookie"))
+            at, *_ = self.buy_fixture()
+            session = Mock(origin=DESKTOP_ORIGIN)
+            session.submit.return_value = self.json_response({"isSuccessful": False, "message": message,
+                                                             "private": "fixture-private"}, 429)
+            with patch(__name__ + ".datetime", wraps=datetime) as clock:
+                clock.now.return_value = at
+                report = []
+                OneShotOrder().submit(session, self.fixture_order(), at, report, approved=True)
+            for secret in ("fixture-secret", "another-secret", "fixture-private"):
+                self.assertNotIn(secret, json.dumps(run_report(report)))
+
+        def test_explicit_zero_bound_persian_name_and_decimal_tick_are_not_missing_data(self):
+            at, draft, symbol, market, calendar, start = self.buy_fixture()
+            symbol.update(symbolName="FIXTURE\u200cNAME", minDealablePrice="0.000000000000000001")
+            market["lowAllowedPrice"] = 0
+            order = build_buy_order(draft, symbol, market, 10_000_000, 22, "56593.000000000000000001",
+                                    DESKTOP_ORIGIN, at, calendar, start)
+            self.assertEqual(order.symbol_name, symbol["symbolName"])
+            self.assertEqual(order.price, Decimal("56593.000000000000000001"))
+            self.assertEqual(order.total_value, 1245506)
+            with self.assertRaises(Blocked):
+                build_buy_order(draft, symbol, {**market, "lowAllowedPrice": None}, 10_000_000,
+                                22, 56593, DESKTOP_ORIGIN, at, calendar, start)
+
+        def test_read_failure_and_html_ack_are_sanitized_and_never_retried(self):
+            context, page, report = Mock(), Mock(url=DESKTOP_ORIGIN + "/"), []
+            session = BrowserOrderSession(context, page, report)
+            session._auth_headers = {"authorization": "Bearer fixture-secret"}
+            page.evaluate.side_effect = TimeoutError("Authorization: Bearer fixture-secret")
+            with self.assertRaisesRegex(BrowserTransportFailure, "POST /symbols/api/symbols/all: TimeoutError"):
+                session.read(SYMBOLS_URL, SYMBOLS_REQUEST_BODY)
+            page.evaluate.assert_called_once()
+            context.request.get.assert_not_called()
+            self.assertEqual(report[0]["failure_kind"], "browser_transport")
+            self.assertNotIn("fixture-secret", json.dumps(report))
+            at, *_ = self.buy_fixture()
+            active = Mock(origin=DESKTOP_ORIGIN)
+            active.submit.return_value = Mock(status=200, headers={"content-type": "text/html"})
+            attempts = []
+            with patch(__name__ + ".datetime", wraps=datetime) as clock:
+                clock.now.return_value = at
+                result = OneShotOrder().submit(active, self.fixture_order(), at, attempts, approved=True)
+            self.assertEqual(result["acceptance"], "UNCERTAIN")
+            active.submit.assert_called_once()
+            active.submit.return_value.body.assert_not_called()
+
+        def test_keyboard_interrupt_after_attempt_is_reported_as_uncertain_not_zero(self):
+            at, *_ = self.buy_fixture()
+            def interrupted(target, report, **kwargs):
+                active = Mock(origin=DESKTOP_ORIGIN)
+                active.submit.side_effect = KeyboardInterrupt()
+                OneShotOrder().submit(active, self.fixture_order(), at, report, approved=True)
+            output = io.StringIO()
+            with patch(__name__ + ".datetime", wraps=datetime) as clock, \
+                 patch(__name__ + ".run_single_order_browser", side_effect=interrupted), contextlib.redirect_stdout(output):
+                # Main sees a future target; the mocked transport reaches that target before dispatch.
+                clock.now.side_effect = [at - timedelta(minutes=1), at]
+                self.assertEqual(main(["--live", "09:00:00"]), 130)
+            result = json.loads(output.getvalue().splitlines()[-1])
+            self.assertEqual(result["order_requests"], 1)
+            self.assertEqual(result["acceptance"], "UNCERTAIN")
+            self.assertNotIn("No order request was sent", output.getvalue())
+
+        def test_immediate_cli_does_not_default_to_past_0845(self):
+            now = datetime.fromisoformat("2026-11-07T14:10:00+03:30")
+            with patch(__name__ + ".datetime", wraps=datetime) as clock, \
+                 patch(__name__ + ".run_single_order_browser", return_value=None) as run, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                clock.now.return_value = now
+                self.assertEqual(main(["--browser-single-order", "--live"]), 0)
+            run.assert_called_once_with(None, [], live=True, mobile=False)
+
+        def test_login_handoff_closes_private_window_before_prompts_and_dispatches_without_responses(self):
+            at, draft, symbol, market, calendar, start = self.buy_fixture()
+            draft.update(quantity=23, price=56592)
+            drafts = [{**draft, "id": f"fixture-draft-{i}"} for i in range(1, 5)]
+            api = MagicMock(Error=RuntimeError, TimeoutError=TimeoutError)
+            chromium = api.sync_playwright.return_value.__enter__.return_value.chromium
+            visible, background = MagicMock(), MagicMock()
+            chromium.launch.side_effect = [visible, background]
+            context, hidden_context = visible.new_context.return_value, background.new_context.return_value
+            page, hidden = context.new_page.return_value, hidden_context.new_page.return_value
+            page.url = hidden.url = DESKTOP_ORIGIN + "/"
+            response = Mock(url=MONEY_URL, status=200, from_service_worker=False, headers={"content-type": "application/json"})
+            response.request.method = "GET"
+            response.request.all_headers.return_value = {}
+            response.body.return_value = b'{"buyPowerT2":10000000}'
+            context.expect_event.return_value.__enter__.return_value.value = response
+            context.storage_state.return_value = {"cookies": [], "origins": []}
+            page.evaluate.side_effect = [{"fixture-session": "fixture-value"}, "fixture-agent"]
+            def navigate(*args, **kwargs):
+                predicate = context.expect_event.call_args.kwargs["predicate"]
+                unauthorized = Mock(url=MONEY_URL, status=401, from_service_worker=False, headers={"content-type": "application/json"})
+                unauthorized.request.method = "GET"
+                self.assertFalse(predicate(unauthorized))
+                self.assertTrue(predicate(response))
+            page.goto.side_effect = navigate
+            handlers, evaluations = {}, []
+            hidden.on.side_effect = lambda event, callback: handlers.update({event: callback})
+            payloads = {DRAFT_URL: drafts, SYMBOLS_URL: {"symbols": [symbol], "hash": "fixture"},
+                        MARKET_DATA_URL: [market], MONEY_URL: {"buyPowerT2": 10_000_000},
+                        TRADING_TIME_URL: calendar, START_SESSION_URL: start}
+            def evaluate(script, options):
+                if script == BURST_DISPATCH_SCRIPT:
+                    self.assertEqual(options["url"], ORDER_URL)
+                    self.assertEqual(options["durationMs"], 5000)
+                    self.assertEqual(options["intervalMs"], 0.35)
+                    body = json.loads(options["body"])["order"]
+                    self.assertEqual((body["quantity"], body["price"], body["totalValue"], body["orderModelType"]), (23, 56592, 1302096, 1))
+                    for i in range(1, 4):
+                        handlers["console"](Mock(type="log", text="POC_DISPATCH " + json.dumps({"attempt": i, "elapsed_us": i * 350})))
+                    return {"attempts": 3, "responses_checked": 0}
+                evaluations.append((options["method"], options["url"]))
+                if options["url"] == SYMBOLS_URL:
+                    self.assertEqual((options["method"], options["body"]), ("POST", '{"hash":"null"}'))
+                return {"kind": "response", "status": 200, "contentType": "application/json", "body": json.dumps(payloads[options["url"]])}
+            hidden.evaluate.side_effect = evaluate
+            current, output = [at - timedelta(minutes=1)], io.StringIO()
+            answers = iter(["4", "23", "56592", "9", "0", "0", "", ""])
+            def answer(prompt):
+                visible.close.assert_called_once()
+                background.close.assert_not_called()
+                return next(answers)
+            def wait(target, session, **kwargs):
+                current[0] = target
             with patch.dict(sys.modules, {"playwright.sync_api": api}), \
                  patch(__name__ + ".datetime", wraps=datetime) as clock, \
-                 patch("builtins.input") as prompt, patch("time.sleep") as sleep, \
+                 patch(__name__ + ".local_now", side_effect=lambda: current[0]), \
+                 patch(__name__ + ".wait_local_target", side_effect=wait), \
+                 patch(__name__ + ".console_keys", return_value=contextlib.nullcontext(lambda wait=False: "\r" if wait else None)), \
+                 patch("builtins.input", side_effect=answer), contextlib.redirect_stdout(output):
+                clock.now.side_effect = lambda *_: current[0]
+                self.assertEqual(main(["--browser-single-order", "--live"]), 0, output.getvalue())
+            self.assertEqual(json.loads(output.getvalue().splitlines()[-1]), {"order_requests": 3, "acceptance": "UNOBSERVED"})
+            self.assertEqual(evaluations.count(("GET", DRAFT_URL)), 1)
+            self.assertFalse(any(url == ORDERS_URL for _, url in evaluations))
+            self.assertEqual(evaluations.count(("POST", SYMBOLS_URL)), 2)
+            self.assertEqual(output.getvalue().count("POST started"), 3)
+            self.assertNotIn("fixture-value", output.getvalue())
+            self.assertNotIn("CLOSE", output.getvalue())
+            context.storage_state.assert_called_once_with()
+            hidden_context.add_init_script.assert_called_once()
+            self.assertEqual(hidden_context.add_init_script.call_args.args[0].count("fixture-value"), 1)
+            self.assertEqual(background.new_context.call_args.kwargs["user_agent"], "fixture-agent")
+            visible.close.assert_called_once()
+            background.close.assert_called_once()
+            chromium.launch.assert_any_call(channel="chrome", headless=False)
+            chromium.launch.assert_any_call(channel="chrome", headless=True)
+            context.request.get.assert_not_called()
+            hidden_context.request.post.assert_not_called()
+
+        def test_observation_errors_distinguish_http_transport_and_timeout(self):
+            for status, failure, expected in ((403, None, HttpResponseFailure),
+                                               (None, "net::ERR_CONNECTION_RESET", BrowserTransportFailure),
+                                               (None, None, DraftObservationTimeout)):
+                context, page = MagicMock(), Mock(url=DESKTOP_ORIGIN + "/")
+                session = BrowserOrderSession(context, page)
+                session.last_failure = Mock(return_value=failure)
+                context.expect_event.return_value.__exit__.side_effect = TimeoutError("fixture-private")
+                details = {} if status is None else {"http_status": status}
+                with self.subTest(status=status, failure=failure), contextlib.redirect_stdout(io.StringIO()), \
+                     self.assertRaises(expected) as caught:
+                    observe_draft_reads(context, page, details, manual_tab=True, session=session)
+                self.assertNotIn("fixture-private", str(caught.exception))
+                page.goto.assert_called_once()
+
+        def test_observed_snapshot_is_consumed_once_and_no_http_draft_fallback_exists(self):
+            context, page = Mock(), Mock(url=DESKTOP_ORIGIN + "/")
+            session = BrowserOrderSession(context, page)
+            with self.assertRaises(Blocked):
+                session.read(DRAFT_URL)
+            session.seed_drafts([])
+            self.assertEqual(session.read(DRAFT_URL), [])
+            with self.assertRaises(Blocked):
+                session.read(DRAFT_URL)
+            with self.assertRaises(Blocked):
+                session._request("GET", DRAFT_URL)
+            page.evaluate.assert_not_called()
+            context.request.get.assert_not_called()
+
+        def test_browser_fetch_failure_keeps_sanitized_underlying_details(self):
+            context, page, report = Mock(), Mock(url=DESKTOP_ORIGIN + "/"), []
+            session = BrowserOrderSession(context, page, report)
+            session.seed_drafts([])
+            page.evaluate.return_value = {"kind": "browser-transport", "name": "TypeError", "message": "Failed to fetch"}
+            failed = Mock(url=SYMBOLS_URL, method="POST", failure="net::ERR_CONNECTION_RESET")
+            session.observe_failure(failed)
+            def evaluate(*args):
+                session.observe_failure(failed)
+                return {"kind": "browser-transport", "name": "TypeError", "message": "Failed to fetch"}
+            page.evaluate.side_effect = evaluate
+            with self.assertRaisesRegex(BrowserTransportFailure, "TypeError: Failed to fetch; net::ERR_CONNECTION_RESET"):
+                session.read(SYMBOLS_URL, SYMBOLS_REQUEST_BODY)
+            self.assertIsNone(report[0]["http_status"])
+            self.assertEqual(report[0]["failure_kind"], "browser_transport")
+            context.request.get.assert_not_called()
+
+        def test_order_list_polling_matches_exact_id_without_another_post(self):
+            session, report = Mock(), []
+            session.read.side_effect = [{"orders": [{"id": "fixture-order-suffix"}]},
+                                        {"orders": []}, {"orders": [{"id": "fixture-order"}]}]
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = reconcile_order(session, "fixture-order", report)
+            self.assertTrue(result["found"])
+            self.assertEqual(result["reads"], 3)
+            self.assertTrue(all(call.args == (ORDERS_URL,) for call in session.read.call_args_list))
+            session.submit.assert_not_called()
+
+        def test_local_time_prompts_separate_fields_with_084458_defaults(self):
+            now = datetime.fromisoformat("2026-11-07T08:40:00+02:00")
+            with patch(__name__ + ".local_now", return_value=now), patch("builtins.input", side_effect=["", "", ""]) as prompt:
+                target = prompt_order_time()
+            self.assertEqual((target.hour, target.minute, target.second), (8, 44, 58))
+            self.assertEqual(target.utcoffset(), now.utcoffset())
+            self.assertEqual(prompt.call_count, 3)
+            self.assertNotIn("Tehran", " ".join(c.args[0] for c in prompt.call_args_list))
+            for values in (["24"], ["8", "60"], ["8", "44", "60"], ["8", "39", "59"]):
+                with self.subTest(values=values), patch(__name__ + ".local_now", return_value=now), \
+                     patch("builtins.input", side_effect=values), self.assertRaises(Blocked):
+                    prompt_order_time()
+
+        def test_submission_window_defaults_and_invalid_values(self):
+            with patch("builtins.input", side_effect=["", ""]):
+                self.assertEqual(prompt_submission_window(), SubmissionWindow(5_000_000_000, 350_000))
+            with patch("builtins.input", side_effect=["2.5", "700"]):
+                self.assertEqual(prompt_submission_window(), SubmissionWindow(2_500_000_000, 700_000))
+            for values in (["0"], ["-1"], ["NaN"], ["5", "0"], ["5", "0.5"]):
+                with self.subTest(values=values), patch("builtins.input", side_effect=values), self.assertRaises(Blocked):
+                    prompt_submission_window()
+
+        def test_confirmation_accepts_enter_and_escape_without_a_typed_phrase(self):
+            for keys, approved in ((["x", "\r"], True), (["\n"], True), (["\x1b"], False)):
+                with self.subTest(keys=keys), patch(__name__ + ".console_keys",
+                        return_value=contextlib.nullcontext(Mock(side_effect=keys))), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(confirm_order(), approved)
+
+        def test_countdown_has_six_fractional_digits_and_stops_at_target(self):
+            at, *_ = self.buy_fixture()
+            output, session = io.StringIO(), Mock()
+            with patch(__name__ + ".datetime", wraps=datetime) as clock, \
+                 patch("time.monotonic_ns", side_effect=[0, 0, 50_000_000, 200_000_000]), \
+                 patch(__name__ + ".console_keys", return_value=contextlib.nullcontext(lambda wait=False: None)), \
                  contextlib.redirect_stdout(output):
-                clock.now.return_value = ready
-                self.assertEqual(main(["--browser-single-order"]), 2)
-            playwright.chromium.launch.assert_called_once()
-            context.expect_event.assert_called_once()
-            context.new_page.return_value.goto.assert_called_once()
-            browser.close.assert_called_once()
-            prompt.assert_not_called()
-            sleep.assert_not_called()
-            self.assertIn("Timed out waiting for a draft GET", output.getvalue())
-            self.assertNotIn("fixture-private", output.getvalue())
-            self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["order_requests"], 0)
+                clock.now.return_value = at
+                wait_local_target(at + timedelta(microseconds=200000), session)
+            self.assertIn("00:00:00.200000", output.getvalue())
+            self.assertIn("00:00:00.000000", output.getvalue())
+            self.assertLessEqual(max(c.args[0] for c in session.page.wait_for_timeout.call_args_list), 20)
+            with patch(__name__ + ".datetime", wraps=datetime) as clock, \
+                 patch(__name__ + ".console_keys", return_value=contextlib.nullcontext(lambda wait=False: "\x1b")), \
+                 contextlib.redirect_stdout(io.StringIO()), self.assertRaises(KeyboardInterrupt):
+                clock.now.return_value = at
+                wait_local_target(at + timedelta(seconds=1), session)
+
+        def test_dispatch_requires_explicit_approval_and_ignores_unrelated_console_messages(self):
+            at, *_ = self.buy_fixture()
+            session = BrowserOrderSession(Mock(), Mock(url=DESKTOP_ORIGIN + "/"))
+            session.seed_drafts([])
+            with self.assertRaises(Blocked):
+                dispatch_order_window(session, self.fixture_order(), at, SubmissionWindow(1000000, 350000), [])
+            session.page.evaluate.assert_not_called()
+            report, output = [], io.StringIO()
+            def evaluate(script, options):
+                callback = session.page.on.call_args.args[1]
+                callback(Mock(type="log", text="unrelated fixture-private-message"))
+                callback(Mock(type="log", text='POC_DISPATCH {"attempt":999,"elapsed_us":0}'))
+                callback(Mock(type="log", text='POC_DISPATCH {"attempt":1,"elapsed_us":10}'))
+                self.assertEqual(options["url"], ORDER_URL)
+                self.assertIn('"commission":0.00036875', options["body"])
+                self.assertNotIn("await fetch", script)
+                self.assertNotIn("response.json", script)
+                self.assertIn("controller.abort()", script)
+                return {"attempts": 1, "responses_checked": 0}
+            session.page.evaluate.side_effect = evaluate
+            with contextlib.redirect_stdout(output):
+                result = dispatch_order_window(session, self.fixture_order(), at, SubmissionWindow(1000000, 350000), report, approved=True)
+            self.assertEqual(result, {"acceptance": "UNOBSERVED", "attempts": 1, "responses_checked": 0})
+            self.assertEqual(run_report(report)["order_requests"], 1)
+            self.assertNotIn("fixture-private-message", output.getvalue())
+            session.page.evaluate.assert_called_once()
+
+        def test_draft_bootstrap_is_allowed_only_after_verified_login_and_only_once(self):
+            session = BrowserOrderSession(Mock(), Mock(url=DESKTOP_ORIGIN + "/"))
+            with self.assertRaises(Blocked):
+                session.load_drafts_after_login()
+            session.page.evaluate.assert_not_called()
+            session._authenticated_by_login = True
+            session.page.evaluate.return_value = {"kind": "response", "status": 200,
+                                                 "contentType": "application/json", "body": "[]"}
+            session.load_drafts_after_login()
+            with self.assertRaises(Blocked):
+                session.load_drafts_after_login()
+            self.assertEqual(session.read(DRAFT_URL), [])
+            session.page.evaluate.assert_called_once()
+
+        def test_order_list_missing_or_unavailable_does_not_change_ack_or_resubmit(self):
+            for data in ({"orders": []}, {"unexpected": []}):
+                session, report = Mock(), [{"stage": "order-submit", "acceptance": "ACCEPTED", "id": "fixture-order"}]
+                session.read.return_value = data
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = reconcile_order(session, "fixture-order", report)
+                self.assertFalse(result["found"])
+                self.assertEqual(run_report(report)["acceptance"], "ACCEPTED")
+                self.assertLessEqual(session.read.call_count, ORDER_RECONCILE_ATTEMPTS)
+                session.submit.assert_not_called()
+
+        def test_dispatch_transport_failure_is_unobserved_and_never_replayed(self):
+            at, *_ = self.buy_fixture()
+            session = BrowserOrderSession(Mock(), Mock(url=DESKTOP_ORIGIN + "/"))
+            session.seed_drafts([])
+            session.page.evaluate.side_effect = TimeoutError("Authorization: Bearer fixture-secret")
+            with self.assertRaisesRegex(BrowserTransportFailure, "Do not replay") as caught:
+                dispatch_order_window(session, self.fixture_order(), at, SubmissionWindow(5_000_000_000, 350_000), [], approved=True)
+            self.assertNotIn("fixture-secret", str(caught.exception))
+            session.page.evaluate.assert_called_once()
+            session.page.remove_listener.assert_called_once()
 
         def test_redirect_does_not_replay_password(self):
             responses = [(302, {"Location": "/next"}, b""), (200, {"Content-Type": "text/html"}, b"form")]
@@ -1625,7 +3425,9 @@ def self_test():
                         self.assertNotIn(secret, output.getvalue())
 
     # Even an accidental unmocked network call must fail during self-tests.
-    with patch("urllib.request.OpenerDirector.open", side_effect=AssertionError("Network forbidden in self-test")):
+    with patch("urllib.request.OpenerDirector.open", side_effect=AssertionError("Network forbidden in self-test")), \
+         patch("socket.socket.connect", side_effect=AssertionError("Network forbidden in self-test")), \
+         patch("subprocess.Popen", side_effect=AssertionError("Unmocked browser/process launch forbidden in self-test")):
         result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(Tests))
     return 0 if result.wasSuccessful() else 1
 
