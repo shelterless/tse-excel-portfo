@@ -1,5 +1,10 @@
 """Disposable EasyTrader POC. Python 3.10+; no required packages for offline use.
 
+
+Last Tested-OK: 
+
+python POC/easytrader_poc.py --browser-single-order --live
+
 Run in VS Code's terminal:
     python POC/easytrader_poc.py --self-test
     python POC/easytrader_poc.py
