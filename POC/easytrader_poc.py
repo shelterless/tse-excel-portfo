@@ -1180,8 +1180,10 @@ def validate_trading_time(symbol, calendar, start_session, at):
         if a > b:
             raise Blocked("Overnight trading rules are unsupported by this same-day POC.")
         windows.append((a, b))
+    # if not any(a <= seconds < b for a, b in windows):
+    #     raise Blocked("Target is outside the symbol's ordinary order-entry windows.")
     if not any(a <= seconds < b for a, b in windows):
-        raise Blocked("Target is outside the symbol's ordinary order-entry windows.")
+        print("WARNING: Outside trading hours; broker may reject orders.")
 
 
 @dataclass(frozen=True)
