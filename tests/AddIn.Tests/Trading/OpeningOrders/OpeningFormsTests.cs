@@ -13,6 +13,84 @@ namespace TseExcel.AddIn.Tests.Trading.OpeningOrders;
 public class OpeningFormsTests
 {
     [Fact]
+    public void SymbolOnlyForms_KeepOneDisplayNameAndNoTechnicalIdentityOrMicrosecondLabels() => Sta(() =>
+    {
+        var draft = Draft(); var order = new InstrumentFees(.001m, 0, null).CreateOrder(draft, 1000, 2000);
+        using var selection = new DraftSelectionForm(new[] { draft });
+        using var details = new OrderDetailsForm(draft);
+        using var timing = new DispatchTimingForm();
+        using var confirmation = new FinalConfirmationForm(order, new(DateTimeOffset.Now.AddHours(1), 5, 340));
+        foreach (OpeningForm form in new OpeningForm[] { selection, details, timing, confirmation })
+        {
+            string text = string.Join(" ", AllControls(form).Select(c => c.Text));
+            Assert.DoesNotContain(draft.SymbolIsin, text);
+            Assert.DoesNotContain("نام ابزار", text); Assert.DoesNotContain("نماد و", text);
+            Assert.DoesNotContain("میکروثانیه", text);
+        }
+        Assert.Equal(350, timing.IntervalMilliseconds);
+        timing.Interval.Text = "340"; Assert.Equal(340, timing.IntervalMilliseconds);
+        string confirmed = string.Join(" ", AllControls(confirmation).Select(c => c.Text));
+        Assert.Contains("میلی‌ثانیه", confirmed); Assert.Contains("340", confirmed); Assert.Contains("15", confirmed);
+        Assert.Equal(1000, draft.Quantity); Assert.Equal(2000m, draft.UnitPriceIrr);
+    });
+
+    [Theory]
+    [InlineData(true, false, false, "توقف پیش از آغاز ارسال")]
+    [InlineData(true, false, true, "ورود یا اعتبار نشست تأیید نشد")]
+    [InlineData(false, true, false, "عملیات لغو شد")]
+    [InlineData(false, false, false, "۶ از ۶")]
+    public void ExecutionTerminalStates_DoNotMislabelPreflightOrCancellation(bool failed, bool cancelled, bool auth, string heading) => Sta(() =>
+    {
+        var progress = new DispatchProgress(); progress.SetStage(OpeningOrderStage.Preflight);
+        using var form = new DispatchExecutionForm(progress);
+        form.Complete(failed ? null : new(0, 0, TimeSpan.Zero, cancelled), failed, failed ? "خطای آزمایشی" : null, auth);
+        string text = string.Join(" ", AllControls(form).Select(c => c.Text));
+        Assert.Contains(heading, text); Assert.Contains("هیچ تلاش ارسال محلی ثبت نشد", text);
+        if (failed || cancelled) Assert.DoesNotContain("۶ از ۶", text);
+        Assert.Contains("وضعیت سفارش‌های دیگر", text);
+        Assert.True(form.Completed); Assert.False(form.CancelDispatch.Enabled); Assert.True(form.CloseButton.Enabled);
+        Assert.Equal(TimeSpan.Zero, progress.Remaining); Assert.Empty(form.Log.Items);
+    });
+
+    [Fact]
+    public async Task ExecutionFailureAfterInitiations_ReportsUnknownOutcomesAndFreezesWithoutReplay()
+    {
+        var clock = new Clock(); var progress = new DispatchProgress();
+        await new DispatchEngine(clock).RunAsync(new(clock.LocalNow, 1, 500), new Transport(clock), progress, CancellationToken.None);
+        progress.SetStage(OpeningOrderStage.Dispatching);
+        Sta(() =>
+        {
+            using var form = new DispatchExecutionForm(progress);
+            form.Complete(null, true, "خطای آزمایشی");
+            string text = string.Join(" ", AllControls(form).Select(c => c.Text));
+            Assert.Contains("توقف در بازهٔ ارسال", text); Assert.Contains("نامشخص", text);
+            Assert.DoesNotContain("۶ از ۶", text); Assert.DoesNotContain("هیچ تلاش", text);
+            Assert.Equal(2, form.Log.Items.Count); Assert.Equal(TimeSpan.Zero, progress.Remaining);
+        });
+    }
+
+    [Fact]
+    public void DiagnosticBoundary_OnlyOutputsEnumStageFieldAndCategory()
+    {
+        var failure = new OpeningOrderException("private fixture data", OpeningOrderError.InvalidNumericValue,
+            OpeningOrderField.MinDealablePrice, NumericIssue.Null).AtStage(OpeningOrderStage.SymbolMetadata);
+        Assert.Equal("stage=SymbolMetadata; field=MinDealablePrice; category=InvalidNumericValue; numeric=Null",
+            TseExcel.AddIn.Trading.OpeningOrders.OpeningOrderPresenter.SafeDiagnostic(failure, OpeningOrderStage.Preflight));
+        Assert.DoesNotContain("private fixture data", TseExcel.AddIn.Trading.OpeningOrders.OpeningOrderPresenter.SafeDiagnostic(new Exception("private fixture data"), OpeningOrderStage.Dispatching));
+    }
+
+    [Fact]
+    public void AmbiguousBridgeFailureWithNoAcknowledgement_DoesNotImplyNoRequestWasSent() => Sta(() =>
+    {
+        var progress = new DispatchProgress(); progress.SetStage(OpeningOrderStage.Dispatching);
+        using var form = new DispatchExecutionForm(progress); form.Complete(null, true, "خطای آزمایشی");
+        string text = string.Join(" ", AllControls(form).Select(c => c.Text));
+        Assert.Contains("هیچ تلاش ارسال محلی ثبت نشد", text);
+        Assert.Contains("نتیجهٔ درخواست احتمالی نامشخص است", text);
+        Assert.Contains("خودکار تکرار نکنید", text);
+        Assert.DoesNotContain("۶ از ۶", text);
+    });
+    [Fact]
     public void DraftGrid_SelectsExactlyOneActualRowAndPreservesInheritedSide() => Sta(() =>
     {
         OpeningDraft buy = Draft(); OpeningDraft sell = buy with { Id = "sell", Side = OrderSide.Sell };
@@ -22,8 +100,11 @@ public class OpeningFormsTests
         form.Grid.ClearSelection(); Assert.Null(form.SelectedDraft);
         form.Grid.Rows[1].Selected = true;
         Assert.Same(sell, form.SelectedDraft);
-        Assert.Equal("فروش", form.Grid.Rows[1].Cells[2].Value);
-        Assert.Equal(5, form.Grid.Columns.Count);
+        Assert.Equal("فروش", form.Grid.Rows[1].Cells[1].Value);
+        Assert.Equal(4, form.Grid.Columns.Count);
+        Assert.Equal(new[] { "نماد", "جهت", "تعداد", "قیمت واحد (ریال)" },
+            form.Grid.Columns.Cast<DataGridViewColumn>().Select(c => c.HeaderText));
+        Assert.DoesNotContain(form.Grid.Rows[1].Cells.Cast<DataGridViewCell>(), c => Equals(c.Value, sell.SymbolIsin));
     });
 
     [Fact]
@@ -75,7 +156,7 @@ public class OpeningFormsTests
     public async Task Log_BatchesAllRecordsIntoOneFixedScrollableControlAndFreezesOnCompletion()
     {
         var clock = new Clock(); var progress = new DispatchProgress();
-        await new DispatchEngine(clock).RunAsync(new(clock.LocalNow, 1m, 350), new Transport(clock), progress, CancellationToken.None);
+        await new DispatchEngine(clock).RunAsync(new(clock.LocalNow, 1000m, 350), new Transport(clock), progress, CancellationToken.None);
         Sta(() =>
         {
             using var form = new DispatchExecutionForm(progress);
@@ -88,7 +169,7 @@ public class OpeningFormsTests
             Assert.True(form.Log.ScrollAlwaysVisible); Assert.False(form.Log.IntegralHeight);
             Assert.True(form.Completed); Assert.False(form.CancelDispatch.Enabled); Assert.True(form.CloseButton.Enabled);
             Assert.All(form.Log.Items.Cast<string>(), line => Assert.DoesNotContain('\n', line));
-            Assert.StartsWith("08:44:58.000000 | #000001", (string)form.Log.Items[0]);
+            Assert.StartsWith("08:44:58.000 | #000001", (string)form.Log.Items[0]);
         });
     }
 

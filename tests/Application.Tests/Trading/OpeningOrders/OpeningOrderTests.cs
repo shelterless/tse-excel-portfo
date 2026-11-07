@@ -7,6 +7,77 @@ namespace TseExcel.Application.Tests.Trading.OpeningOrders;
 
 public class OpeningOrderTests
 {
+    [Fact]
+    public async Task Timers_AdvanceBetweenWidelySpacedAttemptsAndFreezeAtEnd()
+    {
+        var progress = new DispatchProgress(); var samples = new List<TimeSpan>();
+        var clock = new FakeClock { OnWait = () => samples.Add(progress.Elapsed) };
+        var transport = new FakeDispatch(clock);
+        await new DispatchEngine(clock).RunAsync(new(clock.LocalNow, 1, 1000), transport, progress, CancellationToken.None);
+        Assert.Single(transport.MonotonicStarts);
+        Assert.Contains(TimeSpan.FromMilliseconds(500), samples);
+        Assert.Contains(TimeSpan.FromMilliseconds(975), samples);
+        Assert.Equal(TimeSpan.FromSeconds(1), progress.Elapsed); Assert.Equal(TimeSpan.Zero, progress.Remaining);
+    }
+    [Theory]
+    [InlineData(5, 340, 15)]
+    [InlineData(5, 350, 15)]
+    [InlineData(1, 500, 2)]
+    [InlineData(1, 1000, 1)]
+    public async Task MillisecondSchedule_MatchesEstimateAndExclusiveBoundary(int seconds, int milliseconds, long expected)
+    {
+        var clock = new FakeClock(); var dispatch = new FakeDispatch(clock);
+        var settings = new DispatchSettings(clock.LocalNow.AddSeconds(1), seconds, milliseconds);
+        var progress = new DispatchProgress();
+        var summary = await new DispatchEngine(clock).RunAsync(settings, dispatch, progress, CancellationToken.None);
+        Assert.Equal(expected, settings.EstimatedAttempts);
+        Assert.Equal(expected, summary.InitiatedAttempts);
+        Assert.Equal(TimeSpan.FromSeconds(1), dispatch.MonotonicStarts[0]);
+        Assert.All(dispatch.MonotonicStarts, start => Assert.True(start < TimeSpan.FromSeconds(1 + seconds)));
+        Assert.All(dispatch.MonotonicStarts.Zip(dispatch.MonotonicStarts.Skip(1)), pair =>
+            Assert.True(pair.Second - pair.First >= TimeSpan.FromMilliseconds(milliseconds)));
+        Assert.Equal(TimeSpan.FromSeconds(seconds), summary.Elapsed);
+        Assert.Equal(OpeningOrderStage.Completed, progress.Stage);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(90)]
+    [InlineData(600)]
+    public async Task BridgeAndSchedulerLatency_CannotCompressSpacingOrExceedEstimate(int latencyMilliseconds)
+    {
+        var clock = new FakeClock { WakeLatency = TimeSpan.FromMilliseconds(latencyMilliseconds) };
+        var dispatch = new FakeDispatch(clock) { OnInitiate = _ => clock.Elapsed += TimeSpan.FromMilliseconds(110) };
+        var settings = new DispatchSettings(clock.LocalNow.AddSeconds(1), 5, 340);
+        var summary = await new DispatchEngine(clock).RunAsync(settings, dispatch, new(), CancellationToken.None);
+        Assert.InRange(summary.InitiatedAttempts, 1, settings.EstimatedAttempts);
+        Assert.All(dispatch.MonotonicStarts, start => Assert.True(start >= TimeSpan.FromSeconds(1) && start < TimeSpan.FromSeconds(6)));
+        Assert.All(dispatch.MonotonicStarts.Zip(dispatch.MonotonicStarts.Skip(1)), pair =>
+            Assert.True(pair.Second - pair.First >= settings.Interval));
+    }
+
+    [Fact]
+    public async Task Workflow_PreflightFailureRecordsNoAttemptsAndNeverPreparesOrRetries()
+    {
+        var clock = new FakeClock(); var broker = new FakeBroker(clock) { FailPreflight = true };
+        var draft = Draft(); var progress = new DispatchProgress();
+        await Assert.ThrowsAsync<OpeningOrderException>(() => new OpeningOrderWorkflow(broker, clock).ExecuteConfirmedAsync(
+            draft, new InstrumentFees(0, 0, null).CreateOrder(draft, 100, 1000), new(clock.LocalNow.AddSeconds(8), 5, 350), true, progress, CancellationToken.None));
+        Assert.Equal(1, broker.Validations); Assert.Equal(0, broker.OpenCalls);
+        Assert.Equal(0, progress.InitiatedAttempts); Assert.Empty(progress.Drain());
+        Assert.Equal(OpeningOrderStage.Preflight, progress.Stage);
+        progress.Freeze(); Assert.Equal(TimeSpan.Zero, progress.Remaining);
+    }
+
+    [Fact]
+    public async Task Workflow_CancelledBeforePreflightCannotReadOrPrepareTransport()
+    {
+        var clock = new FakeClock(); var broker = new FakeBroker(clock); var draft = Draft();
+        using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new OpeningOrderWorkflow(broker, clock).ExecuteConfirmedAsync(
+            draft, new InstrumentFees(0, 0, null).CreateOrder(draft, 100, 1000), new(clock.LocalNow.AddSeconds(8), 5, 350), true, new(), cancellation.Token));
+        Assert.Equal(0, broker.Validations); Assert.Equal(0, broker.OpenCalls);
+    }
     [Theory]
     [InlineData(2, "100.1", "0.001", "0.2", "1", "201")]
     [InlineData(3, "10", "0.01", "2", "4", "146")]
@@ -47,11 +118,11 @@ public class OpeningOrderTests
     [Fact]
     public void Timing_UsesApprovedDefaultsAndCeilingEstimate()
     {
-        var settings = new DispatchSettings(DateTimeOffset.Now, DispatchSettings.DefaultDurationSeconds, DispatchSettings.DefaultIntervalMicroseconds);
+        var settings = new DispatchSettings(DateTimeOffset.Now, DispatchSettings.DefaultDurationSeconds, DispatchSettings.DefaultIntervalMilliseconds);
         Assert.Equal(new TimeOnly(8, 44, 58), DispatchSettings.DefaultStart);
         Assert.Equal(TimeSpan.FromSeconds(5), settings.Duration);
-        Assert.Equal(TimeSpan.FromTicks(3500), settings.Interval);
-        Assert.Equal(14286, settings.EstimatedAttempts);
+        Assert.Equal(TimeSpan.FromMilliseconds(350), settings.Interval);
+        Assert.Equal(15, settings.EstimatedAttempts);
         Assert.Throws<ArgumentOutOfRangeException>(() => new DispatchSettings(settings.Start, 0, 350));
         Assert.Throws<ArgumentOutOfRangeException>(() => new DispatchSettings(settings.Start, 5, 0));
         Assert.Throws<ArgumentOutOfRangeException>(() => new DispatchSettings(settings.Start, .00000001m, 350));
@@ -67,13 +138,13 @@ public class OpeningOrderTests
         var clock = new FakeClock();
         var transport = new FakeDispatch(clock);
         var progress = new DispatchProgress();
-        var settings = new DispatchSettings(clock.LocalNow.AddMilliseconds(1), .001m, 350);
+        var settings = new DispatchSettings(clock.LocalNow.AddMilliseconds(1), 1m, 350);
         DispatchSummary summary = await new DispatchEngine(clock).RunAsync(settings, transport, progress, CancellationToken.None);
         Assert.Equal(3, summary.InitiatedAttempts);
         Assert.Equal(0, summary.InitiationFailures);
         Assert.True(transport.Disposed);
         Assert.False(transport.BrokerResponse.Task.IsCompleted);
-        Assert.Equal(new[] { 10000L, 13500L, 17000L }, transport.MonotonicStarts.Select(x => x.Ticks));
+        Assert.Equal(new[] { 10000L, 3510000L, 7010000L }, transport.MonotonicStarts.Select(x => x.Ticks));
         IReadOnlyList<DispatchRecord> records = progress.Drain();
         Assert.Equal(new long[] { 1, 2, 3 }, records.Select(x => x.Attempt));
         Assert.Equal(transport.EventTimes, records.Select(x => x.Timestamp));
@@ -114,7 +185,7 @@ public class OpeningOrderTests
         var clock = new FakeClock();
         var transport = new FakeDispatch(clock) { FailFirst = true };
         var progress = new DispatchProgress();
-        DispatchSummary summary = await new DispatchEngine(clock).RunAsync(new(clock.LocalNow, .001m, 350), transport, progress, CancellationToken.None);
+        DispatchSummary summary = await new DispatchEngine(clock).RunAsync(new(clock.LocalNow, 1m, 350), transport, progress, CancellationToken.None);
         Assert.Equal(2, summary.InitiatedAttempts); Assert.Equal(1, summary.InitiationFailures);
         Assert.Equal(new long[] { 1, 2, 3 }, progress.Drain().Select(x => x.Attempt));
         Assert.Throws<ArgumentOutOfRangeException>(() => progress.Drain(0));
@@ -130,10 +201,10 @@ public class OpeningOrderTests
     }
 
     [Fact]
-    public void CompactLog_HasSixFractionalDigitsAndOneLineRegardlessOfCurrentCulture()
+    public void CompactLog_HasThreeFractionalDigitsAndOneLineRegardlessOfCurrentCulture()
     {
         var stamp = new DateTimeOffset(2026, 11, 7, 8, 44, 58, TimeSpan.FromHours(3.5)).AddTicks(1240);
-        Assert.Equal("08:44:58.000124 | #000001", new DispatchRecord(1, stamp, false).Format());
+        Assert.Equal("08:44:58.000 | #000001", new DispatchRecord(1, stamp, false).Format());
         Assert.DoesNotContain('\n', new DispatchRecord(2, stamp, true).Format());
     }
 
@@ -145,7 +216,7 @@ public class OpeningOrderTests
         var workflow = new OpeningOrderWorkflow(broker, clock);
         OpeningDraft draft = Draft();
         OrderTerms order = new InstrumentFees(0, 0, null).CreateOrder(draft, 100, 1000);
-        var settings = new DispatchSettings(clock.LocalNow.AddSeconds(8), .001m, 350);
+        var settings = new DispatchSettings(clock.LocalNow.AddSeconds(8), 1m, 350);
         await Assert.ThrowsAsync<OpeningOrderException>(() => workflow.ExecuteConfirmedAsync(draft, order, settings, false, new(), CancellationToken.None));
         await Assert.ThrowsAsync<OpeningOrderException>(() => workflow.ExecuteConfirmedAsync(draft with { Side = OrderSide.Sell }, order, settings, true, new(), CancellationToken.None));
         Assert.Equal(0, broker.Validations);
@@ -171,8 +242,10 @@ public class OpeningOrderTests
         private readonly DateTimeOffset origin = new(2026, 11, 7, 8, 0, 0, TimeSpan.Zero);
         public DateTimeOffset LocalNow => origin + Elapsed;
         public TimeSpan Elapsed { get; set; }
+        internal TimeSpan WakeLatency { get; init; }
+        internal Action? OnWait { get; init; }
         public Task WaitUntilAsync(TimeSpan deadline, CancellationToken cancellationToken)
-        { cancellationToken.ThrowIfCancellationRequested(); if (Elapsed < deadline) Elapsed = deadline; return Task.CompletedTask; }
+        { cancellationToken.ThrowIfCancellationRequested(); OnWait?.Invoke(); if (Elapsed < deadline) Elapsed = deadline + WakeLatency; return Task.CompletedTask; }
     }
 
     private sealed class FakeDispatch(FakeClock clock) : IOrderDispatch
@@ -202,8 +275,11 @@ public class OpeningOrderTests
         internal int OpenCalls { get; private set; }
         internal TimeSpan ValidatedAt { get; private set; }
         internal TimeSpan AdvancePreflight { get; init; }
+        internal bool FailPreflight { get; init; }
         public Task ValidateAsync(OpeningDraft draft, OrderTerms order, DispatchSettings settings, CancellationToken cancellationToken)
-        { Validations++; ValidatedAt = clock.Elapsed; clock.Elapsed += AdvancePreflight; return Task.CompletedTask; }
+        { Validations++; ValidatedAt = clock.Elapsed; clock.Elapsed += AdvancePreflight;
+            if (FailPreflight) throw new OpeningOrderException("Sanitized preflight failure.", OpeningOrderError.InvalidNumericValue);
+            return Task.CompletedTask; }
         public Task<IOrderDispatch> OpenDispatchAsync(OrderTerms order, DateTimeOffset cutoff, CancellationToken cancellationToken)
         { OpenCalls++; return Task.FromResult<IOrderDispatch>(new FakeDispatch(clock)); }
         public Task AuthenticateAsync(bool refresh, CancellationToken cancellationToken) => throw new NotSupportedException();

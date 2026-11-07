@@ -4,20 +4,20 @@ public sealed record DispatchSettings
 {
     public static TimeOnly DefaultStart => new(8, 44, 58);
     public const decimal DefaultDurationSeconds = 5m;
-    public const int DefaultIntervalMicroseconds = 350;
+    public const int DefaultIntervalMilliseconds = 350;
     public DateTimeOffset Start { get; }
     public TimeSpan Duration { get; }
     public TimeSpan Interval { get; }
     public long EstimatedAttempts => checked((long)decimal.Ceiling((decimal)Duration.Ticks / Interval.Ticks));
 
-    public DispatchSettings(DateTimeOffset start, decimal durationSeconds, int intervalMicroseconds)
+    public DispatchSettings(DateTimeOffset start, decimal durationSeconds, int intervalMilliseconds)
     {
         decimal ticks = durationSeconds * TimeSpan.TicksPerSecond;
-        if (ticks <= 0 || ticks > TimeSpan.MaxValue.Ticks || ticks != decimal.Truncate(ticks) || intervalMicroseconds <= 0)
+        if (ticks <= 0 || ticks > TimeSpan.MaxValue.Ticks || ticks != decimal.Truncate(ticks) || intervalMilliseconds <= 0)
             throw new ArgumentOutOfRangeException(nameof(durationSeconds), "Positive, representable dispatch timing is required.");
         Start = start;
         Duration = TimeSpan.FromTicks((long)ticks);
-        Interval = TimeSpan.FromTicks(checked((long)intervalMicroseconds * 10));
+        Interval = TimeSpan.FromTicks(checked((long)intervalMilliseconds * TimeSpan.TicksPerMillisecond));
         _ = start + Duration;
         _ = EstimatedAttempts;
     }

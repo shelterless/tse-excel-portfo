@@ -7,6 +7,8 @@ public sealed class OpeningOrderWorkflow(IOpeningOrderBroker broker, IDispatchCl
     public async Task<DispatchSummary> ExecuteConfirmedAsync(OpeningDraft draft, OrderTerms order,
         DispatchSettings settings, bool explicitlyConfirmed, DispatchProgress progress, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        progress.SetStage(OpeningOrderStage.WaitingForPreflight);
         if (!explicitlyConfirmed) throw new OpeningOrderException("Explicit confirmation is required for every execution.");
         if (draft.Side != OrderSide.Buy || order.Side != OrderSide.Buy || draft.SymbolIsin != order.SymbolIsin || draft.ValidityType != 0)
             throw new OpeningOrderException("Only a matching ordinary DAY BUY is enabled.");
@@ -17,9 +19,11 @@ public sealed class OpeningOrderWorkflow(IOpeningOrderBroker broker, IDispatchCl
             progress.Update(TimeSpan.Zero, settings.Start - clock.LocalNow);
             await clock.WaitUntilAsync(Min(refreshAt, clock.Elapsed + TimeSpan.FromMilliseconds(25)), cancellationToken).ConfigureAwait(false);
         }
+        progress.SetStage(OpeningOrderStage.Preflight);
         await broker.ValidateAsync(draft, order, settings, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         if (clock.LocalNow >= settings.Start) throw new OpeningOrderException("Preflight completed after the approved start time.");
+        progress.SetStage(OpeningOrderStage.PreparingDispatch);
         IOrderDispatch dispatch = await broker.OpenDispatchAsync(order, settings.Start + settings.Duration, cancellationToken).ConfigureAwait(false);
         return await new DispatchEngine(clock).RunAsync(settings, dispatch, progress, cancellationToken).ConfigureAwait(false);
     }

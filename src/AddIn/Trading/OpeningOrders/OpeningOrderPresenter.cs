@@ -33,7 +33,7 @@ internal sealed class OpeningOrderPresenter(IOpeningOrderBroker broker)
                 return;
             }
             if (draft.ValidityType != 0) { Notify("این آزمایش فقط سفارش خرید با اعتبار روز را پشتیبانی می‌کند."); return; }
-            if (!Load("دریافت مشخصات ابزار", false, token => broker.GetFeesAsync(draft, token), out InstrumentFees? fees)) return;
+            if (!Load("دریافت مشخصات نماد", false, token => broker.GetFeesAsync(draft, token), out InstrumentFees? fees)) return;
             OrderTerms? order = null;
             void Recalculate() => order = RecalculateDetails(draft, fees!, details);
             details.TermsChanged += (_, _) => Recalculate();
@@ -45,7 +45,7 @@ internal sealed class OpeningOrderPresenter(IOpeningOrderBroker broker)
             {
                 try
                 {
-                    settings = new(DispatchSettings.TodayLocal(timing.StartTime, DateTimeOffset.Now), timing.DurationSeconds, timing.IntervalMicroseconds);
+                    settings = new(DispatchSettings.TodayLocal(timing.StartTime, DateTimeOffset.Now), timing.DurationSeconds, timing.IntervalMilliseconds);
                     timing.Estimate.Text = OpeningForm.Number(settings.EstimatedAttempts) + " (تقریبی؛ بدون تضمین)";
                     timing.SetValidity(true);
                 }
@@ -97,8 +97,16 @@ internal sealed class OpeningOrderPresenter(IOpeningOrderBroker broker)
         OpeningOrderError.Authentication => "ورود یا اعتبار نشست تأیید نشد. از «ورود به مفید» دوباره وارد شوید.",
         OpeningOrderError.ReadFailure => "دریافت اطلاعات مفید کامل نشد. اتصال و دسترسی Chrome را بررسی کنید و دوباره اقدام کنید.",
         OpeningOrderError.MalformedResponse => "ساختار پاسخ مفید با قرارداد تأییدشده سازگار نیست. عملیات متوقف شد؛ مورد را گزارش کنید.",
-        OpeningOrderError.MissingInstrumentMetadata => "مشخصات ابزار انتخاب‌شده در پاسخ مفید یافت نشد. پیش‌نویس را در مفید بررسی کنید؛ ادامه ممکن نیست.",
+        OpeningOrderError.MissingInstrumentMetadata => "مشخصات نماد انتخاب‌شده در پاسخ مفید یافت نشد. پیش‌نویس را در مفید بررسی کنید؛ ادامه ممکن نیست.",
         OpeningOrderError.InvalidNumericValue => "یکی از مقادیر مالی مفید موجود یا معتبر نیست، یا با دقت کامل قابل محاسبه نیست. مقدار جایگزین استفاده نمی‌شود؛ مورد را گزارش کنید.",
+        OpeningOrderError.MarketClosed => "بازهٔ انتخاب‌شده با روز یا ساعات مجاز بازار هم‌پوشانی ندارد. ارسال آغاز نشد.",
+        OpeningOrderError.MarketUnavailable => "نماد متوقف، محدود یا فاقد وضعیت مجاز خرید است. ادامه ممکن نیست.",
+        OpeningOrderError.InsufficientBuyingPower => "قدرت خرید برای مبلغ یک سفارش با کارمزد کافی نیست.",
+        OpeningOrderError.MinimumNotional => "ارزش سفارش از حداقل مجاز بازار کمتر است.",
+        OpeningOrderError.SafetyCap => "مبلغ یک سفارش از سقف ایمنی پنج میلیون ریال بیشتر است.",
+        OpeningOrderError.StalePreflight => "اطلاعات بررسی پیش از ارسال یا تاریخ نشست برای بازهٔ انتخاب‌شده تازه و معتبر نیست.",
+        OpeningOrderError.InvalidOrderConstraints => "قیمت یا تعداد با حدود و گام مجاز نماد سازگار نیست.",
+        OpeningOrderError.MetadataChanged => "مشخصات مالی نماد پس از تأیید تغییر کرده است. سفارش نیاز به بازبینی دارد.",
         _ => "عملیات انجام نشد. اطلاعات، نشست یا زمان‌بندی را بررسی کنید. نتیجهٔ هیچ سفارشی از این پیام قابل استنتاج نیست."
     };
 
@@ -113,6 +121,7 @@ internal sealed class OpeningOrderPresenter(IOpeningOrderBroker broker)
             DispatchSummary? summary = null;
             bool failed = false;
             string? failureMessage = null;
+            bool authenticationFailed = false;
             try
             {
                 summary = await Task.Run(() => new OpeningOrderWorkflow(broker, new SystemDispatchClock())
@@ -122,11 +131,12 @@ internal sealed class OpeningOrderPresenter(IOpeningOrderBroker broker)
             { summary = new(progress.InitiatedAttempts, progress.InitiationFailures, progress.Elapsed, true); }
             catch (Exception exception)
             {
-                System.Diagnostics.Trace.WriteLine("Opening-order execution stopped: " + exception.GetType().Name);
+                System.Diagnostics.Trace.WriteLine("Opening-order execution stopped: " + SafeDiagnostic(exception, progress.Stage));
                 failed = true;
                 failureMessage = ErrorText(exception);
+                authenticationFailed = exception is OpeningOrderException { Error: OpeningOrderError.Authentication };
             }
-            form.Complete(summary, failed, failureMessage);
+            form.Complete(summary, failed, failureMessage, authenticationFailed);
         };
         form.ShowDialog();
     }
@@ -150,7 +160,7 @@ internal sealed class OpeningOrderPresenter(IOpeningOrderBroker broker)
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
             catch (Exception exception)
             {
-                System.Diagnostics.Trace.WriteLine("Mofid operation failed: " + exception.GetType().Name);
+                System.Diagnostics.Trace.WriteLine("Mofid operation failed: " + SafeDiagnostic(exception, OpeningOrderStage.None));
                 failure = exception;
             }
             finally { form.Finish(); }
@@ -163,4 +173,8 @@ internal sealed class OpeningOrderPresenter(IOpeningOrderBroker broker)
     }
 
     private static void Notify(string message) => MessageBox.Show(message, "مفید", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+    internal static string SafeDiagnostic(Exception exception, OpeningOrderStage fallback) => exception is OpeningOrderException error
+        ? (error.Stage == OpeningOrderStage.None ? error.AtStage(fallback) : error).SafeDiagnostic
+        : $"stage={fallback}; category=UnexpectedFailure";
 }

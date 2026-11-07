@@ -35,11 +35,42 @@ public enum OpeningOrderError
     ReadFailure,
     MalformedResponse,
     MissingInstrumentMetadata,
-    InvalidNumericValue
+    InvalidNumericValue,
+    MarketClosed,
+    MarketUnavailable,
+    InsufficientBuyingPower,
+    MinimumNotional,
+    SafetyCap,
+    StalePreflight,
+    InvalidOrderConstraints,
+    MetadataChanged
 }
+
+public enum OpeningOrderStage
+{
+    None, WaitingForPreflight, Preflight, Authentication, SymbolMetadata, MarketData,
+    BuyingPower, Calendar, Session, PreparingDispatch, WaitingForStart, Dispatching, Completed
+}
+
+public enum OpeningOrderField
+{
+    None, BuyCommission, HidePrice, ContractSize, LowAllowedPrice, HighAllowedPrice,
+    MinDealablePrice, MinDealableCount, MinValidBuyVolume, MaxValidBuyVolume,
+    BuyPowerT2, MarketUnit, TradingTimeType, Quantity, Price, Side, ValidityType
+}
+
+public enum NumericIssue { None, Missing, Null, Representation, NonPositive, OutOfRange, NonIntegral }
 
 public sealed class OpeningOrderException : Exception
 {
     public OpeningOrderError Error { get; }
-    public OpeningOrderException(string message, OpeningOrderError error = OpeningOrderError.General) : base(message) => Error = error;
+    public OpeningOrderStage Stage { get; private set; }
+    public OpeningOrderField Field { get; }
+    public NumericIssue NumericIssue { get; }
+    public OpeningOrderException(string message, OpeningOrderError error = OpeningOrderError.General,
+        OpeningOrderField field = OpeningOrderField.None, NumericIssue numericIssue = NumericIssue.None) : base(message)
+    { Error = error; Field = field; NumericIssue = numericIssue; }
+    public OpeningOrderException AtStage(OpeningOrderStage stage) { Stage = stage; return this; }
+    // Only enums cross the diagnostic boundary; never include exception messages or broker values.
+    public string SafeDiagnostic => $"stage={Stage}; field={Field}; category={Error}; numeric={NumericIssue}";
 }
