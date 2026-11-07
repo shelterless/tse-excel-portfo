@@ -83,7 +83,7 @@ internal sealed class ChromeMofidBrowser : IMofidBrowser
         catch (Exception exception) when (exception is PlaywrightException or JsonException or OpeningOrderException)
         {
             await CloseBrowserAsync().ConfigureAwait(false);
-            throw new OpeningOrderException("Interactive Chrome authentication did not establish a verified session.");
+            throw new OpeningOrderException("Interactive Chrome authentication did not establish a verified session.", OpeningOrderError.Authentication);
         }
         finally { sessionGate.Release(); }
     }
@@ -133,7 +133,7 @@ internal sealed class ChromeMofidBrowser : IMofidBrowser
     private static void RequireClientPage(IPage page)
     {
         if (!Uri.TryCreate(page.Url, UriKind.Absolute, out Uri? uri) || uri.GetLeftPart(UriPartial.Authority) != ClientOrigin)
-            throw new OpeningOrderException("The owned browser left the verified EasyTrader origin.");
+            throw new OpeningOrderException("The owned browser left the verified EasyTrader origin.", OpeningOrderError.Authentication);
     }
 
     internal static (string Path, string Method, string? Body, int MaximumBytes) ReadRequest(MofidRead read, string? isin) => read switch
@@ -150,7 +150,7 @@ internal sealed class ChromeMofidBrowser : IMofidBrowser
     public async Task<JsonElement> ReadAsync(MofidRead read, string? symbolIsin, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!authenticated || transportPage is null) throw new OpeningOrderException("An authenticated Chrome context is required.");
+        if (!authenticated || transportPage is null) throw new OpeningOrderException("An authenticated Chrome context is required.", OpeningOrderError.Authentication);
         RequireClientPage(transportPage);
         var request = ReadRequest(read, symbolIsin);
         try
@@ -163,14 +163,24 @@ internal sealed class ChromeMofidBrowser : IMofidBrowser
             if (!result.GetProperty("ok").GetBoolean())
             {
                 authenticated = false;
-                throw new OpeningOrderException("Authenticated browser read failed; no independent HTTP fallback is available.");
+                OpeningOrderError error = result.TryGetProperty("authentication", out JsonElement auth) && auth.ValueKind == JsonValueKind.True
+                    ? OpeningOrderError.Authentication
+                    : result.TryGetProperty("malformed", out JsonElement malformed) && malformed.ValueKind == JsonValueKind.True
+                        ? OpeningOrderError.MalformedResponse : OpeningOrderError.ReadFailure;
+                throw new OpeningOrderException("Authenticated browser read did not return verified data.", error);
             }
-            using JsonDocument document = JsonDocument.Parse(result.GetProperty("body").GetString()!);
+            JsonElement body = result.GetProperty("body");
+            if (body.ValueKind != JsonValueKind.String) throw MofidJson.Invalid();
+            using JsonDocument document = JsonDocument.Parse(body.GetString()!);
             return document.RootElement.Clone();
         }
-        catch (Exception exception) when (exception is PlaywrightException or JsonException or InvalidOperationException or KeyNotFoundException)
+        catch (PlaywrightException)
         {
-            throw new OpeningOrderException("Mofid browser read failed or returned an invalid response.");
+            throw new OpeningOrderException("Mofid browser read could not complete.", OpeningOrderError.ReadFailure);
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException)
+        {
+            throw MofidJson.Invalid();
         }
     }
 
@@ -182,21 +192,36 @@ internal sealed class ChromeMofidBrowser : IMofidBrowser
             const response = await fetch(args.url, {method: args.method, headers: args.headers,
               body: args.body ?? undefined, credentials: 'include', redirect: 'error',
               cache: 'no-store', signal: controller.signal});
-            if (!response.ok || !(response.headers.get('content-type') || '').toLowerCase().startsWith('application/json'))
-              return {ok:false};
+            if (response.status === 401 || response.status === 403) return {ok:false, authentication:true};
+            if (!response.ok) return {ok:false};
+            if ((response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase() !== 'application/json' || !response.body)
+              return {ok:false, malformed:true};
             const reader = response.body.getReader();
             const chunks = []; let size = 0;
             for (;;) {
               const chunk = await reader.read(); if (chunk.done) break;
               size += chunk.value.byteLength;
-              if (size > args.maximumBytes) { await reader.cancel(); return {ok:false}; }
+              if (size > args.maximumBytes) { await reader.cancel(); return {ok:false, malformed:true}; }
               chunks.push(chunk.value);
             }
             const bytes = new Uint8Array(size); let offset = 0;
             for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-            return {ok:true, body:new TextDecoder('utf-8', {fatal:true}).decode(bytes)};
+            try { return {ok:true, body:new TextDecoder('utf-8', {fatal:true}).decode(bytes)}; }
+            catch { return {ok:false, malformed:true}; }
           } catch { return {ok:false}; }
           finally { clearTimeout(timer); }
+        }
+        """;
+
+    internal const string PrepareDispatchScript = """
+        args => {
+          if (window.__tseOpening) throw new Error('An operation is already active');
+          const state = {cancelled:false, payload:args.payload,
+            headers:args.headers, url:args.url, cutoff:args.cutoff};
+          // Stop only future initiations. Already initiated requests retain their transport lifetime.
+          state.stop = () => { state.cancelled = true; };
+          state.timer = setTimeout(state.stop, Math.max(0, args.cutoff - Date.now()));
+          window.__tseOpening = state;
         }
         """;
 
@@ -207,16 +232,7 @@ internal sealed class ChromeMofidBrowser : IMofidBrowser
         RequireClientPage(transportPage);
         try
         {
-            await transportPage.EvaluateAsync("""
-                args => {
-                  if (window.__tseOpening) throw new Error('An operation is already active');
-                  const state = {cancelled:false, pending:new Set(), payload:args.payload,
-                    headers:args.headers, url:args.url, cutoff:args.cutoff};
-                  state.stop = () => { state.cancelled = true; for (const c of state.pending) c.abort(); state.pending.clear(); };
-                  state.timer = setTimeout(state.stop, Math.max(0, args.cutoff - Date.now()));
-                  window.__tseOpening = state;
-                }
-                """, new { payload, cutoff = cutoff.ToUnixTimeMilliseconds(), headers = RequestHeaders(true), url = ApiOrigin + "/core/api/v2/order" }).ConfigureAwait(false);
+            await transportPage.EvaluateAsync(PrepareDispatchScript, new { payload, cutoff = cutoff.ToUnixTimeMilliseconds(), headers = RequestHeaders(true), url = ApiOrigin + "/core/api/v2/order" }).ConfigureAwait(false);
             return new ChromeOrderDispatch(transportPage);
         }
         catch (PlaywrightException) { throw new OpeningOrderException("The browser could not prepare local dispatch."); }

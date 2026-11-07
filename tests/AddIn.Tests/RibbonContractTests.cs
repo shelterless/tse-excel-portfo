@@ -31,6 +31,14 @@ public class RibbonContractTests
         Assert.Equal("TSE Excel", (string?)tab.Attribute("label"));
         XElement[] buttons = tab.Descendants(ns + "button").ToArray();
         Assert.Equal(new[] { "Create JSON", "Show JSON", "ورود به مفید", "ارسال سرخطی" }, buttons.Select(button => (string?)button.Attribute("label")));
+        foreach (XElement button in buttons.Skip(2))
+        {
+            Assert.False(string.IsNullOrWhiteSpace((string?)button.Attribute("screentip")));
+            Assert.False(string.IsNullOrWhiteSpace((string?)button.Attribute("supertip")));
+            Assert.False(string.IsNullOrWhiteSpace((string?)button.Attribute("keytip")));
+        }
+        Assert.Contains("حافظه", (string)buttons[2].Attribute("supertip")!, StringComparison.Ordinal);
+        Assert.Contains("سفارشی ارسال نمی‌کند", (string)buttons[3].Attribute("supertip")!);
 
         foreach (XElement button in buttons)
         {
