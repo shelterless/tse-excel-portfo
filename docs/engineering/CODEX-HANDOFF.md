@@ -13,7 +13,7 @@ ChatGPT prepares a complete implementation prompt only after discussing the chan
 7. **Tests and verification:** unit tests for every change, adapter/contract/integration tests as applicable, reproducible build/test commands and sanitized fixtures.
 8. **Acceptance criteria:** objective conditions, expected output, failure behavior, no-loss invariants and the PO's local Excel acceptance checklist.
 9. **Delivery report:** changed files, design choices, exact commands and observed results, unrun tests/reasons, risks and pending PO decisions.
-10. **Hard Git restrictions:** Codex MUST NOT commit, push, tag, create/merge PRs or publish releases. Leave all source changes uncommitted for the PO's local testing and personal commit. Do not independently change approved governance/context documentation.
+10. **Feature-branch Git boundaries:** Codex works only on a dedicated feature branch, runs feasible build/tests, then commits/pushes changes only to that branch. Include the exact branch, head SHA and PR URL in the handoff. Do not commit/push directly to `main`, merge, tag, publish releases, or modify governance documentation. The PO must explicitly approve the reviewed head before any merge.
 
 ## Read-only reference assets
 
@@ -38,8 +38,9 @@ Automated unit tests, integration tests and commands:
 PO local Excel acceptance checklist:
 Objective acceptance criteria:
 Delivery report requirements:
-Git: DO NOT COMMIT, PUSH, TAG, CREATE/MERGE PRs OR RELEASE.
-Leave all source changes uncommitted; PO alone tests, accepts and commits source.
+Git: WORK IN A DEDICATED FEATURE BRANCH. COMMIT/PUSH THAT BRANCH ONLY AFTER TESTS.
+DO NOT DIRECTLY CHANGE MAIN, MERGE, TAG, RELEASE, OR EDIT GOVERNANCE DOCUMENTS.
+Report exact branch, head SHA, PR link, changed files, and observed test/build results. PO approval is required for merge.
 ```
 
 Prefer an end-to-end implementable work package to fragmented micro-experiments. Technical tests should be automated by Codex, not repeatedly delegated to the PO unless local Excel or live-account acceptance is required.

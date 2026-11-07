@@ -13,11 +13,11 @@ This document is authoritative for repository roles, source and documentation ow
 
 | Role | Responsibility | Hard limits |
 |---|---|---|
-| **Product Owner (PO) — the user** | Owns product goals, backlog, priorities, scope, decision-making, architectural approval, acceptance criteria and final acceptance. Performs local build, tests and Excel verification. **Only the PO commits/pushes source code** after local validation. Reviews and approves completed documentation drafts. | All source acceptance and source commits are PO decisions. |
-| **ChatGPT — advisor, analyst and documentation steward** | Consults with PO, clarifies requirements, identifies risks and trade-offs, prepares architecture proposals, acceptance criteria and complete Codex implementation prompts. Reads and reviews source **read-only**. Drafts and maintains documentation. | **Never edits, stages, commits, pushes or otherwise modifies source code, tests, `.csproj`, solution/build files, runtime configuration or other non-documentation assets.** Can commit **documentation only** on `main`, **after PO reviews and explicitly approves the finished draft**. |
-| **Codex — software developer** | Implements PO-approved C# changes, writes/updates automated tests, performs feasible technical verification and reports actual results. | **Never commits, pushes, tags, creates/merges pull requests or publishes releases.** Leaves source changes uncommitted. Does not independently change governance/context documentation. |
+| **Product Owner (PO)** | Owns requirements, scope, review decisions, merge authorization, and local build, Excel, and live-account acceptance. | The PO must explicitly authorize a merge against a reviewed head SHA; only the PO performs live-account acceptance. |
+| **ChatGPT** | Advises, prepares work packages, and reviews actual source diffs and tests read-only. After explicit PO approval, may merge the reviewed PR only when current tool/project permissions allow; otherwise the PO merges. | Never edits source, tests, `.csproj`, build/configuration files, or release artifacts; never merges unreviewed or changed source. May commit only PO-approved documentation drafts. |
+| **Codex** | Implements and tests PO-approved work on its own feature branch, then commits/pushes that branch and supplies an inspectable PR/diff and evidence. | Never writes or merges into `main`, tags, releases, or independently changes governance documentation. |
 
-**Lifecycle:** PO discusses needs with ChatGPT → ChatGPT clarifies, designs and defines a coherent work package → PO approves scope → ChatGPT delivers a complete Codex prompt → Codex implements/tests **without commit** → PO runs local tests and Excel acceptance checks → PO approves and **personally commits/pushes source**.
+**Lifecycle:** PO approves scope → ChatGPT prepares the implementation handoff → Codex develops/tests/commits and pushes a dedicated feature branch → ChatGPT reviews its actual remote diff/tests read-only → PO explicitly authorizes the reviewed head → authorized merge into `main` (ChatGPT only if permitted; otherwise PO) → PO pulls `main`, tests locally, and alone accepts real-account behavior. Changes after review require re-review.
 
 ## Mandatory engineering standards
 
@@ -33,7 +33,8 @@ Use [CODEX-HANDOFF.md](../engineering/CODEX-HANDOFF.md) to prepare every profess
 
 ## Source of truth, uncertainty, scope and safety
 
-- Current `main` is authoritative for repository state and adopted contracts unless a newer explicit PO statement overrides it. Do not pretend the GitHub connection exists when unavailable.
+- Current `main` is authoritative for repository state and adopted contracts unless a newer explicit PO statement overrides it.
+- D-029 governs feature-branch delivery and merge authorization. A feature-branch commit is not local Excel or live-account acceptance. Do not pretend the GitHub connection exists when unavailable.
 - **Never guess** material product behavior, market API contracts, workbook structure, financial meaning, repository contents or unapproved decisions. Ask the smallest useful clarifying question.
 - Approved direction: **C#/.NET + Excel-DNA; no VBA/VB** in the new product. Auto-Updater, licensing, a hosted backend and commercialization are **later phases**.
 - Distinguish missing data, halted symbols, stale values and API failures; never silently erase user-owned workbook cells or formulas.
@@ -43,7 +44,7 @@ Use [CODEX-HANDOFF.md](../engineering/CODEX-HANDOFF.md) to prepare every profess
 
 1. ChatGPT prepares **complete documentation drafts** and presents them to the PO **before any Git modification**. General discussion is **not** approval.
 2. Only after **explicit PO approval of the finished draft**, ChatGPT must itself edit and commit **documentation only** directly to `main`, rather than handing patches to the PO. Verify the written files by reading back and report the actual commit SHA(s).
-3. **Source is read-only for ChatGPT even when Git write access exists.** Documentation access does not grant source modification rights.
+3. **Source is read-only for ChatGPT even when Git write access exists.** Documentation access does not grant source modification rights. Permission to merge, if available, is limited to an explicitly PO-approved, unchanged, reviewed PR; it does not authorize editing or directly committing source.
 4. Detailed documents remain canonical in GitHub and are retrieved lazily; do not require duplicate Project Sources. If obsolete copies exist, ask the PO to remove them after confirming GitHub access.
 5. **Only when `docs/gpt/PROJECT-INSTRUCTIONS.md` changes** tell the PO to paste the updated bootstrap into ChatGPT Project Instructions.
 6. Follow [GOVERNANCE.md](GOVERNANCE.md).

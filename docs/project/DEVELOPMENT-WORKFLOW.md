@@ -2,14 +2,14 @@
 
 ## Role-driven lifecycle
 
-1. **PO defines the need.** The user, acting as Product Owner, sets goals, priorities and scope.
-2. **ChatGPT advises and clarifies.** Inspect source **read-only** on verified `main`, read [OPERATING-CONTRACT](OPERATING-CONTRACT.md) and task-specific documents, identify tradeoffs and ask about material ambiguity.
-3. **ChatGPT proposes the work package.** Define boundaries, design considerations, risks, acceptance criteria and test requirements. The PO confirms the scope.
-4. **ChatGPT writes a professional Codex prompt** conforming to [CODEX-HANDOFF](../engineering/CODEX-HANDOFF.md) and [ENGINEERING-STANDARDS](../engineering/ENGINEERING-STANDARDS.md), with current reference URLs and explicit **no-commit** constraints.
-5. **Codex implements** C# source and automated tests in the development workspace. No commits, pushes, tags, PRs or releases.
-6. **Codex reports technical verification** using actual commands/results; any environment-dependent Excel test remains clearly pending when not executable.
-7. **PO runs local tests and acceptance checks**, including the real workbook/Excel where relevant, and approves or rejects the implementation.
-8. **PO personally commits/pushes source** only after accepting the local result. ChatGPT does not do source writes, even if technically connected to GitHub.
+1. PO defines and approves a bounded task and acceptance criteria.
+2. ChatGPT verifies current `main` and relevant engineering/decision documents read-only.
+3. ChatGPT prepares the complete Codex implementation package after scope approval.
+4. Codex creates an isolated feature branch, implements and tests without modifying `main`.
+5. Codex commits and pushes only that feature branch, optionally opens a PR, and reports the exact head SHA, diff, and build/test evidence.
+6. ChatGPT reviews the remote source diff and tests read-only; blockers are resolved on the feature branch and reviewed again.
+7. PO explicitly approves a specific reviewed head for merge. The authorized merge is performed only if current permissions permit; otherwise PO merges. No approval carries over to a changed head.
+8. PO pulls `main`, locally runs the build, tests, Excel checks, and any separately approved live-account test. PO owns acceptance and any subsequent corrective work decision.
 
 ## Documentation lifecycle — separate approval gate
 
@@ -29,7 +29,7 @@ A work package must have sufficiently clear product behavior, approved boundarie
 - Automated unit tests exist for **every** code change, with meaningful negative cases; relevant integration/contract tests included.
 - Build/test results are reported honestly and any unavailable check is disclosed.
 - Workbook values, user formulas, manual columns and private data are protected.
-- PO has run required local verification and accepted the result **before committing**.
+- The feature branch, head SHA, diff and test evidence have been reviewed; the PO has explicitly authorized the reviewed merge. Local Excel/live acceptance remains pending until the PO performs it after pulling `main`.
 
 Avoid lengthy rounds of manual micro-tests. Prefer cohesive implementation and one PO acceptance pass, supported by developer-run automated tests.
 

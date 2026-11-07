@@ -9,11 +9,12 @@
 
 ## Write-access matrix
 
-| Actor | Read source | Edit source/tests/build files | Commit/push source | Draft documentation | Commit documentation to `main` |
+| Actor | Read source | Edit source/tests/build files | Commit/push source | Merge into `main` | Documentation |
 |---|---|---|---|---|---|
-| **PO (user)** | Yes | As owner | **Exclusive authority, after local tests** | Approves | May directly if desired |
-| **ChatGPT** | **Read-only** | **Never** | **Never** | Yes | **Yes, only after PO approval of the finished draft** |
-| **Codex** | Yes, for implementation | Yes, in uncommitted working tree | **Never** | Only when task explicitly calls for it; context governance remains PO/ChatGPT-controlled | **Never** |
+| **PO** | Yes | As owner | Yes | Explicitly authorizes; may perform | Approves documentation drafts |
+| **ChatGPT** | Read-only | Never | Never | Only an unchanged reviewed PR after explicit PO approval and only if current permissions allow; otherwise PO merges | Drafts and commits only explicitly approved documentation |
+| **Codex** | Yes | Only its approved feature branch | Feature branch only | Never | No independent governance changes |
+
 
 ChatGPT's ability to write documentation does **not** grant permission to modify any `.cs`, tests, `.sln`, `.csproj`, configuration, scripts, runtime artifacts, workbook, release pipeline or source-adjacent implementation files. If a requested documentation change would necessarily change code, send that code task through the PO → Codex workflow instead.
 
@@ -29,7 +30,7 @@ ChatGPT's ability to write documentation does **not** grant permission to modify
 
 ## Codex delivery and Git rule
 
-Codex must not commit, push, tag, publish, open/merge PRs or alter GitHub release state. It hands uncommitted code and tests to the PO, reports verified tests/builds, and the PO runs local acceptance tests before personally committing source. ChatGPT may review those source changes but **must not make them**.
+Codex works on a bounded feature branch, runs automated checks, commits/pushes only that branch, and provides the branch SHA, PR and actual verification evidence. ChatGPT reviews the remote diff and tests without source writes. The PO approves or rejects the precise reviewed head. A source merge must never occur without explicit PO authorization and cannot be inferred from green checks. The PO then pulls `main` and performs local/Excel acceptance. Documentation approval remains separate.
 
 ## Security and other boundaries
 

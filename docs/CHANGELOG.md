@@ -2,6 +2,12 @@
 
 > This file describes approved documentation changes, not source-code releases.
 
+## 2026-11-07 — Feature-branch delivery governance
+
+- Accepted D-029 to make approved source changes reviewable on dedicated feature branches before merge.
+- Clarified Codex's branch-only commits/pushes, ChatGPT's read-only source review and strictly PO-authorized merge boundary, and the PO's post-merge local/Excel acceptance.
+- Updated the operating contract, governance, development workflow, Codex handoff, documentation index and ChatGPT bootstrap consistently. No source or test files were changed by the documentation revision.
+
 ## 2026-11-07 — Excel-hosted Mofid opening-order POC
 
 - Accepted D-028 as the authoritative bounded scope for the Excel-hosted Mofid opening-order proof of concept.
