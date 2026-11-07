@@ -1,0 +1,28 @@
+# build
+
+dotnet restore TseExcel.slnx --disable-parallel -p:MSBuildEnableWorkloadResolver=false --verbosity minimal
+
+# then
+
+dotnet build TseExcel.slnx --configuration Release --no-restore --maxcpucount:1 --nodeReuse:false -p:MSBuildEnableWorkloadResolver=false -p:UseSharedCompilation=false --verbosity minimal
+
+
+# expected output
+# in this folder
+
+.\src\AddIn\bin\Release\net10.0-windows\publish\
+
+# for excel 64x
+AddIn-AddIn64-packed.xll برای Excel نسخهٔ ۶۴بیتی
+
+# for excel 32x
+AddIn-AddIn-packed.xll برای Excel نسخهٔ ۳۲بیتی
+
+# for chrome playwrite
+folder .playwright
+
+---
+
+# codex version:
+dotnet build TseExcel.slnx -c Release --no-restore -m:1 -p:UseSharedCompilation=false -v:quiet
+dotnet test TseExcel.slnx -c Release --no-build --no-restore -m:1 --logger 'console;verbosity=minimal' --blame-hang-timeout 60s --blame-hang-dump-type none
