@@ -1,11 +1,33 @@
-"""Experimental native-HTTP POC; never imports or runs the frozen reference.
+"""Standalone native-HTTP opening-order POC. Run from the repository root.
 
-Default: offline configuration preview. PO-only read-only acceptance:
+REAL END-TO-END RUN (PO only; creates real independent BUY order requests):
+    python POC/easytrader_direct_http_poc.py --authenticate --live
+
+For the mobile EasyTrader login context, also add --mobile:
+    python POC/easytrader_direct_http_poc.py --authenticate --mobile --live
+
+Complete official login/MFA/CAPTCHA manually. The browser closes. Select one
+saved BUY draft, enter quantity/price, today's FUTURE local start time, duration
+in seconds and interval in milliseconds (default 350; live minimum 300). Review
+the per-order value, request count and potential aggregate exposure. ENTER
+approves actual sending; ESC cancels. After approval, countdown/status appears
+while connections and final preflight are prepared. During sending, requests
+run at the chosen minimum call interval without waiting for earlier send calls
+or responses. ESC or Ctrl+C stops future requests, never recalls transmitted
+ones. A readable final summary distinguishes accepted, rejected and unknown
+acknowledgements; it does not claim execution/fills. No test server or simulated
+response is used by this command. Timing and queue priority are not guaranteed.
+
+Normal live execution prints no technical JSON and writes no log files.
+OPTIONAL sanitized technical diagnostics, printed once after the run:
+    python POC/easytrader_direct_http_poc.py --authenticate --live --diagnostics
+
+Read-only checks, with NO order POSTs:
     python POC/easytrader_direct_http_poc.py --authenticate
     python POC/easytrader_direct_http_poc.py --authenticate --preflight
-Only after reviewing read-only acceptance, --authenticate --live offers a
-separate confirmation. No credentials, browser profiles, or reports are saved.
-Private broker contracts and native-stack compatibility remain PO-unverified.
+No arguments: offline only, with no network. Authentication material stays in
+memory; no credentials, persistent browser profile, or reports are exported.
+Never imports or runs the frozen reference. Only the PO tests real accounts.
 """
 
 from __future__ import annotations
@@ -23,6 +45,7 @@ import re
 import secrets
 import socket
 import ssl
+import sys
 import threading
 import time
 from urllib.parse import urlsplit
@@ -216,6 +239,28 @@ class HttpResult:
     status: int | None = None
     acceptance: str = "unknown"
     completed_ns: int | None = None
+    rejection_reason: str | None = None
+
+
+def rejection_reason(data):
+    """Recognize only the public timing error evidenced by the PO's screenshot.
+
+    Do not export arbitrary broker messages: they can contain private data.
+    An unrecognized or missing reason remains unspecified, never guessed.
+    """
+    messages = [data.get("message")]
+    errors = data.get("omsError")
+    if isinstance(errors, str):
+        messages.append(errors)
+    elif isinstance(errors, list):
+        messages.extend(e.get("error") for e in errors[:3] if isinstance(e, dict))
+    for message in messages:
+        if not isinstance(message, str):
+            continue
+        normalized = "".join(message[:4000].replace("\u200c", " ").replace("ي", "ی").split())
+        if "محدودهزمانیسفارشمعتبرنمیباشد" in normalized:
+            return "market_entry_time"
+    return "unspecified"
 
 
 class NativeHttp:
@@ -446,7 +491,8 @@ class NativeHttp:
             if not isinstance(data, dict) or type(data.get("isSuccessful")) is not bool:
                 raise Blocked("malformed_acknowledgement")
             if not data["isSuccessful"]:
-                return HttpResult("broker_response", status, "rejected", time.perf_counter_ns())
+                return HttpResult("broker_response", status, "rejected", time.perf_counter_ns(),
+                                  rejection_reason(data))
             if not isinstance(data.get("id"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", data["id"]):
                 raise Blocked("malformed_acknowledgement")
             return HttpResult("broker_response", status, "accepted", time.perf_counter_ns())
@@ -681,11 +727,107 @@ class DispatchReport:
                               "http_status": r.status if r else None,
                               "completion_monotonic_ns": r.completed_ns if r else None,
                               "broker_acceptance": r.acceptance if r else "unknown",
+                              "rejection_reason": r.rejection_reason if r else None,
                               "execution": "unknown"} for n, stamp, r in snapshot]}
 
 
+def format_duration(nanoseconds):
+    micros = max(0, nanoseconds) // 1000
+    seconds, fraction = divmod(micros, 1_000_000)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    return f"{hours:02}:{minutes:02}:{seconds:02}.{fraction:06}"
+
+
+class LiveConsole:
+    """One presentation/input thread; dispatch never writes or waits for output."""
+
+    def __init__(self, start_ns, window, cancel, *, stream=None, clock=time.perf_counter_ns,
+                 poll_cancel=None):
+        self.start_ns, self.window, self.cancel = start_ns, window, cancel
+        self.stream = sys.stdout if stream is None else stream
+        self.clock = clock
+        self.poll_cancel = poll_cancel or self._escape_pressed
+        self.stage = "Preparing"
+        self.report = None
+        self._stop = threading.Event()
+        self._worker = None
+
+    @staticmethod
+    def _escape_pressed():
+        if not sys.stdin.isatty():
+            return False
+        try:
+            import msvcrt
+        except ImportError:
+            return False
+        return msvcrt.kbhit() and msvcrt.getwch() in ("\x1b", "\x03")
+
+    def frame(self):
+        now = self.clock()
+        count = len(self.report.attempts) if self.report is not None else 0
+        stage = "Cancelling" if self.cancel.is_set() else self.stage
+        if now < self.start_ns:
+            return f"{stage} | Starts in {format_duration(self.start_ns - now)} | Requests {count}"
+        elapsed = min(max(0, now - self.start_ns), self.window.duration_ns)
+        remaining = max(0, self.start_ns + self.window.duration_ns - now)
+        if stage == "Ready":
+            stage = "Sending" if remaining else "Finishing"
+        return (f"{stage} | Elapsed {format_duration(elapsed)} | "
+                f"Left {format_duration(remaining)} | Requests {count}")
+
+    def _render(self):
+        width = 0
+        try:
+            while not self._stop.is_set():
+                if self.poll_cancel():
+                    self.cancel.set()
+                line = self.frame()
+                self.stream.write("\r" + line.ljust(width))
+                width = max(width, len(line))
+                self.stream.flush()
+                self._stop.wait(.05)
+        except Exception:
+            # Console failure must not kill or serialize a handed-off POST.
+            return
+
+    def __enter__(self):
+        print("Approved. Preparing live dispatch; ESC or Ctrl+C stops future requests.",
+              file=self.stream, flush=True)
+        self._worker = threading.Thread(target=self._render, daemon=True, name="live-console")
+        self._worker.start()
+        return self
+
+    def __exit__(self, *_):
+        self._stop.set()
+        self._worker.join(.25)
+        if not self._worker.is_alive():
+            print(file=self.stream, flush=True)
+
+
+def print_live_summary(report):
+    data = report.diagnostics()
+    outcomes = data["attempts"]
+    accepted = sum(a["broker_acceptance"] == "accepted" for a in outcomes)
+    rejected = sum(a["broker_acceptance"] == "rejected" for a in outcomes)
+    unknown = len(outcomes) - accepted - rejected
+    stop = "configured duration ended" if report.stop == "cutoff" else report.stop.replace('_', ' ')
+    print(f"Window finished ({stop}). "
+          f"Requests initiated: {len(outcomes)} / planned {report.planned}.")
+    print(f"Broker responses: accepted {accepted} | rejected {rejected} | unknown {unknown}.")
+    if any(a["rejection_reason"] == "market_entry_time" for a in outcomes):
+        print("Broker rejection reason: order time window is invalid.")
+    if any(a["rejection_reason"] == "unspecified" for a in outcomes):
+        print("The broker rejected requests without a recognized public reason; no cause was assumed.")
+    if report.capacity_skips:
+        print(f"Skipped scheduled calls while all workers were occupied: {report.capacity_skips}.")
+    if unknown:
+        print("Unknown outcomes must not be replayed automatically.")
+    print("Execution/fills were not verified. Check broker orders independently.")
+
+
 def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
-             concurrency=4, drain_seconds=4.0, clock=time.perf_counter_ns, pause=time.sleep):
+             concurrency=4, drain_seconds=4.0, clock=time.perf_counter_ns, pause=time.sleep, progress=None):
     """No response-driven scheduling, queue, catch-up, retry, or console work.
 
     submit(body, before_request) must call before_request immediately before
@@ -704,6 +846,9 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
     cancel = cancel or threading.Event()
     concurrency = min(concurrency, window.attempts)
     report = DispatchReport(window.attempts, worker_capacity=concurrency)
+    if progress is not None:
+        progress.report = report
+        progress.stage = "Preparing dispatch"
     cutoff, due = start_ns + window.duration_ns, start_ns
     idle = queue.Queue(concurrency)
     shutdown = threading.Event()
@@ -774,6 +919,8 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
                 report.stop = "worker_start_failure"
                 cancel.set()
                 break
+        if progress is not None:
+            progress.stage = "Ready"
         while not cancel.is_set() and clock() < cutoff:
             if not wait_until(due, cancel, clock=clock, pause=pause) or clock() >= cutoff:
                 break
@@ -799,6 +946,8 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
         cancel.set()
         report.stop = "cancelled"
     finally:
+        if progress is not None:
+            progress.stage = "Finishing"
         shutdown.set()
         end = time.perf_counter() + drain_seconds
         for worker in workers:
@@ -811,7 +960,7 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
     return report
 
 
-def live_dispatch(client, approved_order, fresh, window, start_ns, *, confirmed=False, cancel=None):
+def live_dispatch(client, approved_order, fresh, window, start_ns, *, confirmed=False, cancel=None, progress=None):
     if window.interval_ns < MIN_LIVE_INTERVAL_NS:
         raise Blocked("live_interval_below_300_ms")
     if not confirmed or not client.live_enabled or not client.verified or fresh.order != approved_order:
@@ -823,7 +972,7 @@ def live_dispatch(client, approved_order, fresh, window, start_ns, *, confirmed=
         raise Blocked("client_identity_changed")
     body = decimal_json(approved_order.payload(datetime.now().astimezone())).encode()
     return dispatch(lambda data, begin: client.submit(data, approved=True, on_initiated=begin), body, window, start_ns,
-                    approved=True, cancel=cancel, concurrency=client.dispatch_capacity(window))
+                    approved=True, cancel=cancel, concurrency=client.dispatch_capacity(window), progress=progress)
 
 
 def confirm_order():
@@ -852,11 +1001,12 @@ def local_target():
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--authenticate", action="store_true", help="PO-only interactive login and native read-only verification")
     parser.add_argument("--mobile", action="store_true")
     parser.add_argument("--preflight", action="store_true", help="PO-only full read-only draft/financial preview; requires --authenticate")
     parser.add_argument("--live", action="store_true", help="PO-only, requires authentication, fresh preflight and per-window confirmation")
+    parser.add_argument("--diagnostics", action="store_true", help="print sanitized technical JSON once after the run; never write a log file")
     args = parser.parse_args(argv)
     diagnostics = {"run_id": secrets.token_hex(8), "authentication_handoff": "not_requested",
                    "native_read_only": "not_checked", "live_requested": args.live}
@@ -867,6 +1017,7 @@ def main(argv=None):
         if not args.authenticate:
             diagnostics.update(mode="offline", order_requests=0, interval_ms=350,
                                theoretical_attempts=Window.from_inputs().attempts)
+            print("Offline mode. No network or orders. Use --authenticate for read-only verification.")
             return 0
         print("Sign in manually in Chrome, including MFA/CAPTCHA. Browser closes before native HTTP verification.")
         diagnostics["authentication_handoff"] = "started"
@@ -876,6 +1027,7 @@ def main(argv=None):
         drafts = client.verify()
         diagnostics["native_read_only"] = client.read_outcome
         if not args.live and not args.preflight:
+            print("Native HTTP session verified. Read-only money/draft checks completed; no order POSTs.")
             return 0
         if not drafts:
             raise Blocked("no_drafts")
@@ -904,18 +1056,28 @@ def main(argv=None):
                            interval_ms=window.interval_ns / 1e6, theoretical_attempts=window.attempts)
         if not args.live:
             diagnostics["order_requests"] = 0
+            print("Read-only preview complete. No order POSTs were sent.")
             return 0
         if not confirm_order():
             diagnostics["stop"] = "confirmation_cancelled"
+            print("Cancelled before dispatch. No order POSTs were sent.")
             return 0
         cancel = threading.Event()
         start_ns = monotonic_target(target)
-        if not wait_until(start_ns - 5_000_000_000, cancel):
-            raise Blocked("cancelled")
-        client.warm_connections(client.dispatch_capacity(window), start_ns)
-        fresh = preflight(client, draft, quantity, price)
-        report = live_dispatch(client, order, fresh, window, start_ns, confirmed=True, cancel=cancel)
+        with LiveConsole(start_ns, window, cancel) as progress:
+            progress.stage = "Countdown"
+            if not wait_until(start_ns - 5_000_000_000, cancel):
+                raise Blocked("cancelled")
+            progress.stage = "Preparing connections"
+            client.warm_connections(client.dispatch_capacity(window), start_ns)
+            if cancel.is_set():
+                raise Blocked("cancelled")
+            progress.stage = "Final preflight"
+            fresh = preflight(client, draft, quantity, price)
+            report = live_dispatch(client, order, fresh, window, start_ns, confirmed=True, cancel=cancel,
+                                   progress=progress)
         diagnostics.update(report.diagnostics())
+        print_live_summary(report)
         return 0
     except Blocked as exc:
         diagnostics["stop"] = exc.category
@@ -923,17 +1085,21 @@ def main(argv=None):
             diagnostics["authentication_handoff"] = "failed"
         if client is not None:
             diagnostics["native_read_only"] = client.read_outcome
+        print("Stopped: " + exc.category.replace("_", " ") + ". No automatic replay.")
         return 2
     except KeyboardInterrupt:
         diagnostics["stop"] = "cancelled"
+        print("Cancelled. Transmitted requests cannot be recalled; no automatic replay.")
         return 130
     except Exception:
         diagnostics["stop"] = "unexpected_failure_no_retry"
+        print("Stopped after an unexpected failure. Check broker orders before any new run; no automatic replay.")
         return 2
     finally:
         if client is not None:
             client.close()
-        print(json.dumps(diagnostics, sort_keys=True))
+        if args.diagnostics:
+            print(json.dumps(diagnostics, sort_keys=True))
 
 
 if __name__ == "__main__":

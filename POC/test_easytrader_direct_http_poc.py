@@ -324,6 +324,22 @@ class AuthenticationTests(OfflineCase):
 
 
 class HttpTests(OfflineCase):
+    def test_only_evidenced_public_timing_reason_is_exposed(self):
+        with Server() as server:
+            client = server.client()
+            self.addCleanup(client.close)
+            client.verify()
+            for data, expected in (({"isSuccessful": False, "message": "محدوده زمانی سفارش معتبر نمی‌باشد!"}, "market_entry_time"),
+                                   ({"isSuccessful": False, "omsError": [{"error": "محدوده زمانی سفارش معتبر نمی باشد!"}]}, "market_entry_time"),
+                                   ({"isSuccessful": False, "message": "fake-private-account-123456"}, "unspecified"),
+                                   ({"isSuccessful": False}, "unspecified")):
+                server.ack = data
+                result = client.submit(b"{}", approved=True)
+                self.assertEqual(result.acceptance, "rejected")
+                self.assertEqual(result.rejection_reason, expected)
+                self.assertNotIn("fake-private", repr(result))
+            self.assertEqual(len(server.received), 4)
+
     def test_warmup_prepares_distinct_connections_without_any_http_request(self):
         client = poc.NativeHttp(auth(), api_origin="http://127.0.0.1:12345", loopback=True)
         self.addCleanup(client.close)
@@ -859,6 +875,50 @@ class IntegrationTests(OfflineCase):
 
 
 class CommandTests(OfflineCase):
+    def test_header_documents_exact_real_run_and_optional_diagnostics(self):
+        self.assertIn("python POC/easytrader_direct_http_poc.py --authenticate --live\n", poc.__doc__)
+        self.assertIn("--authenticate --live --diagnostics", poc.__doc__)
+        self.assertIn("No test server or simulated", poc.__doc__)
+
+    def test_diagnostics_is_opt_in_and_never_contains_auth_material(self):
+        for args in ([], ["--diagnostics"]):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(poc.main(args), 0)
+            json_lines = [line for line in out.getvalue().splitlines() if line.startswith("{")]
+            self.assertEqual(len(json_lines), int(bool(args)))
+            self.assertNotIn(FAKE_TOKEN, out.getvalue())
+            self.assertNotIn(FAKE_COOKIE, out.getvalue())
+            if json_lines:
+                self.assertEqual(json.loads(json_lines[0])["order_requests"], 0)
+
+    def test_real_command_path_reports_broker_rejections_without_technical_json_by_default(self):
+        for debug in (False, True):
+            with self.subTest(diagnostics=debug), Server() as server:
+                server.ack = {"isSuccessful": False, "message": "محدوده زمانی سفارش معتبر نمی‌باشد!",
+                              "private": "fake-private-account"}
+                client = server.client()
+                with patch.object(poc, "authenticate_browser", return_value=auth()), \
+                        patch.object(poc, "NativeHttp", return_value=client), \
+                        patch.object(poc, "local_target", return_value=AT), \
+                        patch.object(poc, "monotonic_target", side_effect=lambda _: time.perf_counter_ns() + 500_000_000), \
+                        patch.object(poc, "confirm_order", return_value=True), \
+                        patch("builtins.input", side_effect=["1", "", "", "0.5", "340"]), \
+                        contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(poc.main(["--authenticate", "--live"] + (["--diagnostics"] if debug else [])), 0)
+                self.assertEqual(len(server.received), 2)
+                text = out.getvalue()
+                self.assertIn("Starts in", text)
+                self.assertIn("Requests initiated: 2 / planned 2", text)
+                self.assertIn("accepted 0 | rejected 2 | unknown 0", text)
+                self.assertIn("order time window is invalid", text)
+                self.assertNotIn("fake-private", text)
+                json_lines = [line for line in text.splitlines() if line.startswith("{")]
+                self.assertEqual(len(json_lines), int(debug))
+                if debug:
+                    details = json.loads(json_lines[0])
+                    self.assertEqual(details["local_initiations"], 2)
+                    self.assertTrue(all(a["rejection_reason"] == "market_entry_time" for a in details["attempts"]))
+
     def test_early_start_warns_once_before_countdown_and_native_posts(self):
         with Server() as server:
             client = server.client()
@@ -881,6 +941,9 @@ class CommandTests(OfflineCase):
             self.assertEqual(len(server.received), 2)
             self.assertIn("planned independent requests=2", output.getvalue())
             self.assertIn("potential aggregate exposure=2000938 IRR", output.getvalue())
+            self.assertIn("Starts in", output.getvalue())
+            self.assertIn("accepted 2 | rejected 0 | unknown 0", output.getvalue())
+            self.assertNotIn('"attempts":', output.getvalue())
 
     def test_full_readonly_preflight_has_no_order_posts(self):
         with Server() as server:
@@ -894,7 +957,8 @@ class CommandTests(OfflineCase):
                 self.assertEqual(poc.main(["--authenticate", "--preflight"]), 0)
             self.assertEqual(server.received, [])
             self.assertEqual(out.getvalue().count("WARNING: " + poc.MARKET_TIME_WARNING), 1)
-            self.assertIn('"order_requests": 0', out.getvalue())
+            self.assertIn("No order POSTs were sent", out.getvalue())
+            self.assertNotIn('"order_requests":', out.getvalue())
 
     def test_default_and_live_without_auth_have_zero_network(self):
         with patch.object(poc, "authenticate_browser", side_effect=AssertionError("no authentication")), \
@@ -916,7 +980,72 @@ class CommandTests(OfflineCase):
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(poc.main(["--authenticate", "--live"]), 2)
         client.close.assert_called_once()
-        self.assertIn("authentication_rejected", out.getvalue())
+        self.assertIn("authentication rejected", out.getvalue())
+
+
+class ConsoleTests(OfflineCase):
+    def test_countdown_elapsed_and_request_count_are_read_from_monotonic_state(self):
+        clock = FakeClock()
+        console = poc.LiveConsole(2_000_000_000, poc.Window.from_inputs(3, 340), threading.Event(),
+                                  stream=io.StringIO(), clock=clock, poll_cancel=lambda: False)
+        self.assertIn("Starts in 00:00:02.000000", console.frame())
+        clock.advance(2.5)
+        console.stage = "Ready"
+        console.report = poc.DispatchReport(9, attempts=[poc.Attempt(1, 2_000_000_000)])
+        frame = console.frame()
+        self.assertIn("Sending", frame)
+        self.assertIn("Elapsed 00:00:00.500000", frame)
+        self.assertIn("Left 00:00:02.500000", frame)
+        self.assertIn("Requests 1", frame)
+        clock.advance(3)
+        self.assertIn("Finishing", console.frame())
+        self.assertIn("Left 00:00:00.000000", console.frame())
+        self.assertLess(len(console.frame()), 80)
+
+    def test_escape_cancels_future_work_without_a_browser_call(self):
+        cancel = threading.Event()
+        with poc.LiveConsole(time.perf_counter_ns() + 1_000_000_000, poc.Window.from_inputs(), cancel,
+                             stream=io.StringIO(), poll_cancel=lambda: True):
+            self.assertTrue(cancel.wait(.5))
+
+    def test_summary_distinguishes_acknowledgements_and_unknown_execution(self):
+        report = poc.DispatchReport(4, attempts=[
+            poc.Attempt(1, 1, poc.HttpResult("broker_response", 200, "accepted")),
+            poc.Attempt(2, 2, poc.HttpResult("broker_response", 200, "rejected", rejection_reason="market_entry_time")),
+            poc.Attempt(3, 3),
+            poc.Attempt(4, 4, poc.HttpResult("broker_response", 200, "rejected", rejection_reason="unspecified"))])
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            poc.print_live_summary(report)
+        self.assertIn("accepted 1 | rejected 2 | unknown 1", out.getvalue())
+        self.assertIn("Execution/fills were not verified", out.getvalue())
+        self.assertIn("no cause was assumed", out.getvalue())
+        self.assertNotIn('"attempts":', out.getvalue())
+
+    def test_slow_console_output_does_not_throttle_http_calls(self):
+        class SlowConsole(io.StringIO):
+            def isatty(self):
+                return True
+
+            def write(self, value):
+                if value.startswith("\r"):
+                    time.sleep(.4)
+                return super().write(value)
+
+        with Server() as server:
+            client = server.client()
+            self.addCleanup(client.close)
+            client.verify()
+            client.warm_connections(3, time.perf_counter_ns() + 1_000_000_000)
+            start, cancel = time.perf_counter_ns() + 100_000_000, threading.Event()
+            window = poc.Window.from_inputs(1, 340)
+            with poc.LiveConsole(start, window, cancel, stream=SlowConsole(), poll_cancel=lambda: False) as progress:
+                report = poc.dispatch(lambda body, begin: client.submit(body, approved=True, on_initiated=begin),
+                                      b"{}", window, start, approved=True, concurrency=3, progress=progress)
+            self.assertEqual(len(server.received), 3)
+            self.assertEqual(len(report.attempts), 3)
+            self.assertEqual(report.capacity_skips, 0)
+            stamps = [a.initiated_ns for a in report.attempts]
+            self.assertTrue(all(b - a >= 340_000_000 for a, b in zip(stamps, stamps[1:])))
 
 
 if __name__ == "__main__":
