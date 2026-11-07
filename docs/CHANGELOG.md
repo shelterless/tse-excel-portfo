@@ -1,6 +1,16 @@
 # Context Documentation Changelog
 
-> This file describes **approved documentation changes**, not source-code releases.
+> This file describes approved documentation changes, not source-code releases.
+
+## 2026-11-07 — Excel-hosted Mofid opening-order POC
+
+- Accepted D-028 as the authoritative bounded scope for the Excel-hosted Mofid opening-order proof of concept.
+- Recorded the strict read-only boundary for `POC/easytrader_poc.py`: inspection only; no modification, formatting, execution, import, invocation or runtime dependency.
+- Specified the six-stage Persian Windows Forms workflow, session handling, draft immutability, order calculations, local dispatch timing, explicit confirmation and completion behavior.
+- Defined the fixed-height, vertically scrollable, one-line-per-attempt dispatch log and separated local dispatch attempts from broker acceptance/execution.
+- Clarified D-027's partial supersession without removing its API uncertainty, authentication, credential-protection or broker-authorization caveats.
+- Added the deferred trading backlog and documented feature-first folders, project ownership, dependency boundaries, testing and Codex handoff requirements.
+- No source files, Python files, tests or runtime assets were changed.
 
 ## 2026-11-03 — EasyTrader web API strategy and local trading experiment
 
@@ -34,16 +44,14 @@
 
 ## 2026-10-12 — PO-approved documentation revision
 
-- Rewrote the root README and ChatGPT context documentation in **English**; PO/ChatGPT conversation remains in Persian.
-- Added a mandatory **Operating Contract**, read at the start of every new conversation, plus lazy-loading instructions for task-specific docs.
-- Formalized **Product Owner / ChatGPT advisor and documentation steward / Codex-Astra developer** role separation.
+- Rewrote the root README and ChatGPT context documentation in English; PO/ChatGPT conversation remains in Persian.
+- Added a mandatory Operating Contract, read at the start of every new conversation, plus lazy-loading instructions for task-specific docs.
+- Formalized Product Owner / ChatGPT advisor and documentation steward / Codex-Astra developer role separation.
 - Prohibited ChatGPT source-code modifications and commits; prohibited all Codex/Astra Git commits and pushes. Reserved source acceptance, local tests and commits to the PO.
-- Made **PO approval of the finished documentation draft** mandatory before ChatGPT writes/commits documentation to `main`.
-- Established mandatory **OOP, SOLID, type safety, justified design patterns and unit tests for every code change**, with code comments/docstrings in English.
+- Made PO approval of the finished documentation draft mandatory before ChatGPT writes/commits documentation to `main`.
+- Established mandatory OOP, SOLID, type safety, justified design patterns and unit tests for every code change, with code comments/docstrings in English.
 - Defined the complete Codex/Astra implementation handoff format, including context links, scope, acceptance criteria, test obligations and no-commit instruction.
 - Preserved product boundaries: C#/.NET + Excel-DNA MVP, with Auto-Updater and commercial platform features deferred.
-
-**Approval status:** Approved by the PO on 2026-10-12 for direct documentation commit to `main`.
 
 ## 2026-10-12 — Earlier bootstrap
 
