@@ -17,20 +17,22 @@ public class TseExcelRibbon : ExcelRibbon
     private readonly WorkbookJsonCommands commands;
     private readonly Func<string?> getActiveWorkbookFullName;
     private readonly Action<string, MessageBoxIcon> showMessage;
+    private readonly Action<bool> openOpeningOrders;
 
     public TseExcelRibbon() : this(
         AddInComposition.CreateWorkbookJsonCommands(),
         new ExcelWorkbook(() => ExcelDnaUtil.Application).GetActiveFullName,
-        ShowMessage)
+        ShowMessage, AddInComposition.CreateOpeningOrderAction())
     {
     }
 
     internal TseExcelRibbon(WorkbookJsonCommands commands, Func<string?> getActiveWorkbookFullName,
-        Action<string, MessageBoxIcon> showMessage)
+        Action<string, MessageBoxIcon> showMessage, Action<bool>? openOpeningOrders = null)
     {
         this.commands = commands;
         this.getActiveWorkbookFullName = getActiveWorkbookFullName;
         this.showMessage = showMessage;
+        this.openOpeningOrders = openOpeningOrders ?? (_ => { });
     }
 
     public override string GetCustomUI(string ribbonId) => """
@@ -42,11 +44,18 @@ public class TseExcelRibbon : ExcelRibbon
                   <button id="tseExcelCreateJson" label="Create JSON" onAction="OnCreateJson" />
                   <button id="tseExcelShowJson" label="Show JSON" onAction="OnShowJson" />
                 </group>
+                <group id="tseExcelMofidGroup" label="مفید">
+                  <button id="tseExcelMofidLogin" label="ورود به مفید" onAction="OnMofidLogin" />
+                  <button id="tseExcelOpeningOrder" label="ارسال سرخطی" onAction="OnOpeningOrder" />
+                </group>
               </tab>
             </tabs>
           </ribbon>
         </customUI>
         """;
+
+    public void OnMofidLogin(IRibbonControl control) => openOpeningOrders(true);
+    public void OnOpeningOrder(IRibbonControl control) => openOpeningOrders(false);
 
     public void OnCreateJson(IRibbonControl control) => Execute(workbookFullName =>
     {

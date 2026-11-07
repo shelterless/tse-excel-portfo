@@ -9,7 +9,7 @@
     <ExcelAddInName>TseExcel.AddIn Add-In</ExcelAddInName>
     <ExcelAddInExplicitExports>true</ExcelAddInExplicitExports>
     <!-- References are packed for runtime loading, not scanned for Excel registration. -->
-    <ExcelAddInInclude>TseExcel.Application.dll;TseExcel.Infrastructure.dll;TseExcel.Domain.dll</ExcelAddInInclude>
+    <ExcelAddInInclude>TseExcel.Application.dll;TseExcel.Infrastructure.dll;TseExcel.Domain.dll;Microsoft.Playwright.dll</ExcelAddInInclude>
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="TseExcel.AddIn.Tests" />
@@ -17,4 +17,11 @@
     <ProjectReference Include="../Application/Application.csproj" />
     <ProjectReference Include="../Infrastructure/Infrastructure.csproj" />
   </ItemGroup>
+  <!-- Playwright's native driver must remain beside the packed XLL, outside its resources. -->
+  <Target Name="CopyMofidBrowserDriverToPublish" AfterTargets="Build">
+    <ItemGroup>
+      <MofidBrowserDriver Include="$(TargetDir).playwright\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(MofidBrowserDriver)" DestinationFiles="@(MofidBrowserDriver->'$(TargetDir)publish\.playwright\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

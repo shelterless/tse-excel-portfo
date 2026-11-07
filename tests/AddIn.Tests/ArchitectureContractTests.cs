@@ -44,7 +44,13 @@ public class ArchitectureContractTests
         }
         else
         {
-            Assert.Empty(project.Descendants("PackageReference"));
+            if (name == "Infrastructure")
+            {
+                XElement package = Assert.Single(project.Descendants("PackageReference"));
+                Assert.Equal("Microsoft.Playwright", (string?)package.Attribute("Include"));
+                Assert.Equal("1.64.1", (string?)package.Attribute("Version"));
+            }
+            else Assert.Empty(project.Descendants("PackageReference"));
             Assert.Empty(project.Descendants("UseWindowsForms"));
             Assert.Empty(project.Descendants("FrameworkReference"));
         }

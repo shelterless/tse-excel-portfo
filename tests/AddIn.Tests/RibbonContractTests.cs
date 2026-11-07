@@ -18,7 +18,7 @@ public class RibbonContractTests
     }
 
     [Fact]
-    public void Ribbon_IsComVisibleAndDeclaresTwoRegisteredButtonCallbacks()
+    public void Ribbon_IsComVisibleAndPreservesJsonAlongsidePersianTradingCallbacks()
     {
         Type ribbonType = typeof(TseExcelRibbon);
         Assert.True(ribbonType.GetCustomAttribute<ComVisibleAttribute>()?.Value);
@@ -30,7 +30,7 @@ public class RibbonContractTests
         XElement tab = Assert.Single(document.Descendants(ns + "tab"));
         Assert.Equal("TSE Excel", (string?)tab.Attribute("label"));
         XElement[] buttons = tab.Descendants(ns + "button").ToArray();
-        Assert.Equal(new[] { "Create JSON", "Show JSON" }, buttons.Select(button => (string?)button.Attribute("label")));
+        Assert.Equal(new[] { "Create JSON", "Show JSON", "ورود به مفید", "ارسال سرخطی" }, buttons.Select(button => (string?)button.Attribute("label")));
 
         foreach (XElement button in buttons)
         {

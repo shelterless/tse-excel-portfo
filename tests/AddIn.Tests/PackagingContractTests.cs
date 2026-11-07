@@ -9,7 +9,7 @@ namespace TseExcel.AddIn.Tests;
 public class PackagingContractTests
 {
     [Fact]
-    public void PackedX64AddIn_ContainsRibbonAssemblyAndAllThreeRuntimeReferences()
+    public void PackedX64AddIn_ContainsRuntimeReferencesAndAdjacentBrowserDriver()
     {
         string configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent!.Name;
         string output = Path.Combine(ArchitectureContractTests.FindRepositoryRoot(), "src", "AddIn", "bin",
@@ -32,6 +32,9 @@ public class PackagingContractTests
                 byte[] bytes = ReadResource(module, "TSEEXCEL." + assembly, "ASSEMBLY_LZMA");
                 Assert.NotEmpty(bytes);
             }
+            Assert.NotEmpty(ReadResource(module, "MICROSOFT.PLAYWRIGHT", "ASSEMBLY_LZMA"));
+            Assert.True(File.Exists(Path.Combine(output, "publish", ".playwright", "node", "win32_x64", "node.exe")));
+            Assert.True(File.Exists(Path.Combine(output, "publish", ".playwright", "package", "cli.js")));
 
             string xml = Encoding.UTF8.GetString(ReadResource(module, "__MAIN__", "DNA"));
             XDocument document = XDocument.Parse(xml);
@@ -40,7 +43,7 @@ public class PackagingContractTests
             Assert.Equal("packed:TSEEXCEL.ADDIN", (string?)library.Attribute("Path"));
             Assert.Equal("true", (string?)library.Attribute("ExplicitExports"));
             Assert.NotEqual("true", (string?)library.Attribute("ExplicitRegistration"));
-            Assert.Equal(new[] { "packed:TSEEXCEL.APPLICATION", "packed:TSEEXCEL.DOMAIN", "packed:TSEEXCEL.INFRASTRUCTURE" },
+            Assert.Equal(new[] { "packed:MICROSOFT.PLAYWRIGHT", "packed:TSEEXCEL.APPLICATION", "packed:TSEEXCEL.DOMAIN", "packed:TSEEXCEL.INFRASTRUCTURE" },
                 document.Descendants().Where(element => element.Name.LocalName == "Reference")
                     .Select(element => (string)element.Attribute("Path")!).Order());
         }
