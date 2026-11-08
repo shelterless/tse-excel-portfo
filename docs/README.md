@@ -10,7 +10,7 @@
 | PO/Codex handoff and local workflow | `project/DEVELOPMENT-WORKFLOW.md`, `engineering/CODEX-HANDOFF.md`, `decisions/0029-feature-branch-source-review-workflow.md` |
 | Coding and testing | `engineering/ENGINEERING-STANDARDS.md`, affected code/tests |
 | Architecture and folder/dependency rules | `engineering/ARCHITECTURE.md`, applicable decision records |
-| Mofid opening-order POC | `decisions/0028-excel-hosted-mofid-opening-order-poc.md`, `project/PRODUCT-BACKLOG.md`, `engineering/ARCHITECTURE.md` |
+| Mofid opening-order POC | `decisions/0028-excel-hosted-mofid-opening-order-poc.md`, `decisions/0030-native-http-opening-order-reference-and-excel-port.md`, `project/PRODUCT-BACKLOG.md`, `engineering/ARCHITECTURE.md` |
 | Deferred trading enhancements | `project/PRODUCT-BACKLOG.md` |
 | Workbook structure and formulas | `contracts/WORKBOOK-CONTRACT.md` |
 | TSETMC reliability and errors | `contracts/DATA-RELIABILITY.md` |

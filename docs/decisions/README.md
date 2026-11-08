@@ -35,11 +35,14 @@ A decision's original statement remains historically intact. Superseded records 
 | D-027 | EasyTrader Web API Integration and Local Trading Proof of Concept | Accepted; partially superseded by D-028 for the Excel-hosted opening-order POC | [0027-easytrader-web-api-local-trading-poc.md](0027-easytrader-web-api-local-trading-poc.md) |
 | D-028 | Excel-Hosted Mofid Opening-Order Proof of Concept | Accepted; implementation pending | [0028-excel-hosted-mofid-opening-order-poc.md](0028-excel-hosted-mofid-opening-order-poc.md) |
 | D-029 | Feature-Branch Source Delivery, Review, and Authorized Merge | Accepted | [0029-feature-branch-source-review-workflow.md](0029-feature-branch-source-review-workflow.md) |
+| D-030 | Native HTTP Opening-Order Reference and Excel Port Alignment | Accepted | [0030-native-http-opening-order-reference-and-excel-port.md](0030-native-http-opening-order-reference-and-excel-port.md) |
 
 ### D-027 / D-028 relationship
 
 D-028 governs the specific Excel-hosted opening-order POC and supersedes only the conflicting D-027 Console-first/single-order sequencing for that bounded task. D-027's API uncertainty, authentication integrity, credential protection and broker-authorization caveats remain in force. D-026 remains the broader deferred broker/trading direction.
 
 D-029 supersedes only earlier conflicting source commit/push and merge-authority provisions. Earlier decisions remain preserved; PO-owned acceptance, ChatGPT's read-only source editing boundary, and documentation approval requirements remain in force.
+
+D-030 supplements D-028 for the native-HTTP Excel port. It designates the newer Python direct-HTTP POC as a read-only behavioral reference and records the post-login native transport, bounded request pacing, connection warmup, asynchronous outcome observation, and workbook-adjacent tracing requirements. D-030 supersedes only conflicting transport/dispatch and response-observation details for this port; D-028's approved UI, order, financial, safety, and four-project boundaries remain.
 
 Future material decisions require PO approval before implementation. Use new numbered ADRs and explicit supersession when warranted.

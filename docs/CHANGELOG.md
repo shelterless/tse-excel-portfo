@@ -1,5 +1,15 @@
 # Context Documentation Changelog
 
+## 2026-11-08 — Native HTTP opening-order reference and Excel port
+
+- Recorded D-030 as the PO-approved technical direction for porting the newer native-HTTP Mofid opening-order POC into the existing Excel-DNA add-in.
+- Designated `POC/easytrader_direct_http_poc.py` and its companion offline tests as frozen, read-only reference assets after PR #4 merge; the older Python reference remains unchanged and read-only.
+- Required manual browser authentication only, verified browser teardown, and native .NET HTTP for all subsequent Mofid reads and order POSTs.
+- Specified the 300 ms live minimum, 350 ms default, bounded non-response-driven dispatch, TCP/TLS warmup followed by final preflight, and no extra artificial delay or catch-up bursts.
+- Required always-on, sanitized, workbook-adjacent per-run trace logs for the Excel phase; a future JSON-configured logging toggle is deferred.
+- Preserved the existing Persian forms and D-028 order/financial safeguards. Real broker acceptance and queue position remain PO-owned live-market acceptance; the supplied nine rejected responses do not establish acceptance.
+- Documentation only; no source, test, workbook, or runtime files were changed by this documentation commit.
+
 > This file describes approved documentation changes, not source-code releases.
 
 ## 2026-11-07 — Feature-branch delivery governance
