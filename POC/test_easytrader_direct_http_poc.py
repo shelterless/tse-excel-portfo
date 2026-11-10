@@ -13,9 +13,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 import os
+from pathlib import Path
 import socket
 import ssl
 import threading
+import tempfile
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -197,6 +199,11 @@ class Server:
 
 class OfflineCase(unittest.TestCase):
     def setUp(self):
+        self.trace_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.trace_directory.cleanup)
+        trace_path = patch.object(poc, "TRACE_DIRECTORY", Path(self.trace_directory.name))
+        trace_path.start()
+        self.addCleanup(trace_path.stop)
         # An accidental brokerage or internet request must fail even in integration tests.
         original = socket.socket.connect
 
@@ -545,7 +552,7 @@ class FinancialTests(OfflineCase):
                 data[which][key] = value
                 with self.assertRaises(poc.Blocked):
                     self.build(**data)
-        for kwargs in (dict(quantity=5000), dict(quantity=100), dict(funds=1000000), dict(price="NaN"),
+        for kwargs in (dict(quantity=5000, symbol={**symbol, "csize": 10}), dict(quantity=100), dict(funds=1000000), dict(price="NaN"),
                        dict(price=1000.0), dict(quantity=True), dict(origin="https://example.com")):
             with self.subTest(kwargs=kwargs), self.assertRaises(poc.Blocked):
                 self.build(**kwargs)
@@ -981,6 +988,454 @@ class CommandTests(OfflineCase):
             self.assertEqual(poc.main(["--authenticate", "--live"]), 2)
         client.close.assert_called_once()
         self.assertIn("authentication rejected", out.getvalue())
+
+
+class TraceTests(OfflineCase):
+    def new_trace(self, **kwargs):
+        trace = poc.RunTrace(poc.secrets.token_hex(8), **kwargs)
+        self.addCleanup(trace.close)
+        return trace
+
+    def events(self, trace):
+        trace.close()
+        raw = trace.path.read_text(encoding="utf-8")
+        self.assertTrue(raw.endswith("\n"))
+        events = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual([e["sequence"] for e in events], list(range(1, len(events) + 1)))
+        self.assertTrue(all(e["run_id"] == trace.run_id for e in events))
+        for event in events:
+            self.assertIsNotNone(datetime.fromisoformat(event["local_timestamp"]).tzinfo)
+        return events
+
+    def fake_dispatch(self, trace, submit, **kwargs):
+        clock = FakeClock()
+        return poc.dispatch(submit, b"fake-private-payload", poc.Window.from_inputs(1, 350), 0,
+                            approved=True, clock=clock, pause=clock.advance, cancel=FakeCancel(clock),
+                            trace=trace, **kwargs)
+
+    def test_live_flag_alone_creates_trace_before_authorization_failure(self):
+        with patch.object(poc, "authenticate_browser") as login, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(poc.main(["--live"]), 2)
+        login.assert_not_called()
+        paths = list(Path(self.trace_directory.name).glob("*.jsonl"))
+        self.assertEqual(len(paths), 1)
+        events = [json.loads(line) for line in paths[0].read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([e["event"] for e in events], ["run_started", "run_aborted"])
+
+    def test_non_live_commands_do_not_create_trace(self):
+        with patch.object(poc, "RunTrace") as sink, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(poc.main([]), 0)
+            self.assertEqual(poc.main(["--diagnostics"]), 0)
+        sink.assert_not_called()
+        self.assertEqual(list(Path(self.trace_directory.name).iterdir()), [])
+
+    def test_unique_run_ids_filenames_and_exclusive_collision_handling(self):
+        first = self.new_trace()
+        first.close()
+        original = first.path.read_bytes()
+        second = self.new_trace()
+        collision = poc.RunTrace(first.run_id)
+        self.addCleanup(collision.close)
+        self.assertNotEqual(first.run_id, second.run_id)
+        self.assertEqual(len({first.path, second.path, collision.path}), 3)
+        self.assertEqual(first.path.read_bytes(), original)
+        self.assertRegex(first.path.name, r"^opening_order_\d{8}_\d{6}_" + first.run_id + r"\.jsonl$")
+        self.events(second)
+        self.events(collision)
+
+    def test_full_live_lifecycle_uses_existing_run_id_without_diagnostics(self):
+        with Server() as server:
+            client = server.client()
+            with patch.object(poc, "authenticate_browser", return_value=auth()), \
+                    patch.object(poc, "NativeHttp", return_value=client), \
+                    patch.object(poc, "local_target", return_value=AT), \
+                    patch.object(poc, "monotonic_target", side_effect=lambda _: time.perf_counter_ns() + 500_000_000), \
+                    patch.object(poc, "confirm_order", return_value=True), \
+                    patch.object(poc.secrets, "token_hex", return_value="0123456789abcdef"), \
+                    patch("builtins.input", side_effect=["1", "", "", "0.5", "340"]), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(poc.main(["--authenticate", "--live"]), 0)
+            self.assertEqual(len(server.received), 2)
+        path, = Path(self.trace_directory.name).glob("*.jsonl")
+        events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        names = [e["event"] for e in events]
+        lifecycle = ["run_started", "authentication_started", "authentication_completed",
+                     "native_verification_completed", "preflight_completed", "user_confirmation",
+                     "connection_warmup_started", "connection_warmup_completed", "final_preflight_completed",
+                     "dispatch_started", "dispatch_window_ended", "drain_started", "drain_completed",
+                     "dispatch_report_snapshot", "run_completed"]
+        self.assertEqual([n for n in names if n in lifecycle], lifecycle)
+        self.assertTrue(all(e["run_id"] == "0123456789abcdef" for e in events))
+        self.assertFalse(any(line.startswith("{") for line in output.getvalue().splitlines()))
+        self.assertEqual(sum(n == "attempt_initiated" for n in names), 2)
+        self.assertEqual(sum(n == "attempt_result_completed" for n in names), 2)
+
+    def test_attempt_correlation_timestamps_gaps_and_snapshot_counts(self):
+        trace = self.new_trace()
+        outcomes = iter([poc.HttpResult("broker_response", 200, "accepted"),
+                         poc.HttpResult("broker_response", 200, "rejected", rejection_reason="market_entry_time"),
+                         poc.HttpResult("transport_timeout", 504)])
+        report = self.fake_dispatch(trace, simulated_submit(lambda _: next(outcomes)))
+        events = self.events(trace)
+        starts = [e for e in events if e["event"] == "attempt_initiated"]
+        results = [e for e in events if e["event"] == "attempt_result_completed"]
+        self.assertEqual([e["attempt_number"] for e in starts], [1, 2, 3])
+        self.assertEqual([e["attempt_number"] for e in results], [1, 2, 3])
+        self.assertEqual([e["initiation_monotonic_ns"] for e in starts], [a.initiated_ns for a in report.attempts])
+        self.assertEqual([e["scheduled_monotonic_ns"] for e in starts], [0, 350_000_000, 700_000_000])
+        self.assertEqual([e["gap_ns"] for e in starts], [None, 350_000_000, 350_000_000])
+        self.assertEqual([e["http_status"] for e in results], [200, 200, 504])
+        self.assertEqual([e["broker_acceptance"] for e in results], ["accepted", "rejected", "unknown"])
+        self.assertEqual(results[1]["rejection_category"], "market_entry_time")
+        self.assertEqual(results[2]["transport"], "transport_timeout")
+        self.assertTrue(all(e["elapsed_ns"] == e["completion_monotonic_ns"] - starts[i]["initiation_monotonic_ns"]
+                            for i, e in enumerate(results)))
+        snapshot = next(e for e in events if e["event"] == "dispatch_report_snapshot")
+        self.assertEqual(snapshot["planned_attempts"], report.planned)
+        self.assertEqual(snapshot["scheduled_attempts"], report.scheduled_attempts)
+        self.assertEqual(snapshot["initiated_attempts"], len(report.attempts))
+        self.assertEqual(snapshot["capacity_skips"], report.capacity_skips)
+        self.assertEqual(snapshot["worker_capacity"], report.worker_capacity)
+        self.assertEqual(snapshot["http_responses_observed"], 3)
+        self.assertEqual(snapshot["completed_broker_acknowledgements"], 2)
+        self.assertEqual(snapshot["completed_unknown_outcomes"], 1)
+        self.assertEqual(snapshot["pending_attempts"], 0)
+        self.assertEqual(snapshot["workers_still_running"], 0)
+
+    def test_http_result_completion_timestamp_is_preserved(self):
+        trace = self.new_trace()
+        clock = FakeClock()
+        result = poc.HttpResult("malformed_acknowledgement", 200, completed_ns=123)
+        poc.dispatch(simulated_submit(lambda _: result), b"{}", poc.Window.from_inputs(1, 1000), 0,
+                     approved=True, trace=trace, clock=clock, pause=clock.advance, cancel=FakeCancel(clock))
+        event = next(e for e in self.events(trace) if e["event"] == "attempt_result_completed")
+        self.assertEqual(event["completion_monotonic_ns"], 123)
+        self.assertEqual(event["elapsed_ns"], 123)
+        self.assertEqual(event["broker_acceptance"], "unknown")
+
+    def test_completed_unknown_and_pending_alive_worker_are_distinct_without_extra_drain(self):
+        trace = self.new_trace()
+        release = threading.Event()
+        finished = threading.Event()
+        calls = 0
+
+        def submit(_, begin):
+            nonlocal calls
+            self.assertTrue(begin())
+            calls += 1
+            if calls == 1:
+                return poc.HttpResult("transport_timeout", completed_ns=time.perf_counter_ns())
+            release.wait(2)
+            finished.set()
+            return poc.HttpResult("broker_response", 200, "accepted", time.perf_counter_ns())
+
+        try:
+            start = time.perf_counter_ns()
+            report = poc.dispatch(submit, b"{}", poc.Window.from_inputs("0.12", 40), start,
+                                  approved=True, concurrency=1, drain_seconds=.01, trace=trace)
+            self.assertLess((time.perf_counter_ns() - start) / 1e9, .6)
+            self.assertEqual(len(report.attempts), 2)
+            events = self.events(trace)
+            completed = [e for e in events if e["event"] == "attempt_result_completed"]
+            pending = [e for e in events if e["event"] == "attempt_pending_at_snapshot"]
+            self.assertEqual(len(completed), 1)
+            self.assertEqual(completed[0]["transport"], "transport_timeout")
+            self.assertEqual(completed[0]["broker_acceptance"], "unknown")
+            self.assertEqual(pending[0]["attempt_number"], 2)
+            self.assertTrue(pending[0]["pending_at_snapshot"])
+            self.assertTrue(pending[0]["worker_alive"])
+            self.assertFalse(pending[0]["completed_result_available"])
+            self.assertEqual(pending[0]["completion_observation"], "until_trace_close")
+            self.assertNotIn("transport", pending[0])
+            snapshot = next(e for e in events if e["event"] == "dispatch_report_snapshot")
+            self.assertEqual(snapshot["completed_unknown_outcomes"], 1)
+            self.assertEqual(snapshot["pending_attempts"], 1)
+            self.assertEqual(snapshot["workers_still_running"], 1)
+            self.assertEqual(snapshot["capacity_skips"], 1)
+            self.assertEqual(sum(e["event"] == "capacity_skipped" for e in events), 1)
+            self.assertIn("drain_deadline_reached", [e["event"] for e in events])
+            self.assertNotIn("drain_completed", [e["event"] for e in events])
+        finally:
+            release.set()
+            self.assertTrue(finished.wait(1))
+
+    def test_late_completion_is_recorded_while_trace_remains_open(self):
+        trace = self.new_trace()
+        release = threading.Event()
+        done = threading.Event()
+
+        def submit(_):
+            release.wait(2)
+            return poc.HttpResult("broker_response", 200, "accepted")
+
+        try:
+            report = poc.dispatch(simulated_submit(submit), b"{}", poc.Window.from_inputs("0.01", 100),
+                                  time.perf_counter_ns(), approved=True, drain_seconds=0, trace=trace)
+            self.assertIsNone(report.attempts[0].result)
+            original_result = trace.result
+
+            def observe(*args, **kwargs):
+                original_result(*args, **kwargs)
+                done.set()
+
+            with patch.object(trace, "result", side_effect=observe):
+                release.set()
+                self.assertTrue(done.wait(1))
+            names = [e["event"] for e in self.events(trace)]
+            self.assertLess(names.index("dispatch_report_snapshot"), names.index("attempt_result_completed"))
+        finally:
+            release.set()
+
+    def test_non_initiated_outcome_has_schedule_correlation_and_no_attempt_number(self):
+        trace = self.new_trace()
+        report = self.fake_dispatch(trace, lambda body, begin: poc.HttpResult("native_verification_required"))
+        events = self.events(trace)
+        event = next(e for e in events if e["event"] == "non_initiated_outcome")
+        self.assertEqual(event["scheduled_attempt"], 1)
+        self.assertEqual(event["scheduled_monotonic_ns"], 0)
+        self.assertEqual(event["transport"], "native_verification_required")
+        self.assertNotIn("attempt_number", event)
+        self.assertEqual(report.attempts, [])
+        self.assertFalse(any(e["event"] == "attempt_initiated" for e in events))
+
+    def test_concurrent_writing_preserves_all_events_and_single_writer(self):
+        trace = self.new_trace()
+        original = trace._write
+        disk_threads = []
+
+        def write(record):
+            disk_threads.append(threading.current_thread().name)
+            original(record)
+
+        with patch.object(trace, "_write", side_effect=write):
+            producers = [threading.Thread(target=lambda n=n: [trace.emit("attempt_initiated", attempt_number=n * 50 + i)
+                                                             for i in range(50)]) for n in range(8)]
+            for producer in producers:
+                producer.start()
+            for producer in producers:
+                producer.join(1)
+                self.assertFalse(producer.is_alive())
+            events = self.events(trace)
+        self.assertEqual(len(events), 401)
+        self.assertEqual({e["attempt_number"] for e in events[1:]}, set(range(400)))
+        self.assertEqual(set(disk_threads), {"run-trace-writer"})
+        self.assertIsNone(trace.failure)
+        self.assertEqual(trace.unwritten_events, 0)
+
+    def test_initialization_failure_prevents_authentication_and_first_post(self):
+        with patch.object(Path, "open", side_effect=OSError("fake-private-token")), \
+                patch.object(poc, "authenticate_browser") as login, \
+                patch.object(poc.NativeHttp, "submit") as submit, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(poc.main(["--authenticate", "--live"]), 2)
+        login.assert_not_called()
+        submit.assert_not_called()
+        self.assertIn("trace initialization failed", output.getvalue())
+        self.assertNotIn("fake-private-token", output.getvalue())
+
+    def test_initial_validation_write_failure_is_sanitized_and_prevents_post(self):
+        with patch.object(poc.RunTrace, "_write", side_effect=OSError(FAKE_TOKEN)), \
+                patch.object(poc.NativeHttp, "submit") as submit, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(poc.main(["--authenticate", "--live"]), 2)
+        submit.assert_not_called()
+        self.assertNotIn(FAKE_TOKEN, output.getvalue())
+
+    def test_writer_failure_stops_future_attempts_and_flushes_retained_events_on_close(self):
+        trace = self.new_trace()
+        failed = threading.Event()
+        original = trace._write
+
+        def fail_on_initiation(record):
+            if record["event"] == "attempt_initiated":
+                failed.set()
+                raise OSError("fake-private-writer-error")
+            original(record)
+
+        def submit(_):
+            self.assertTrue(failed.wait(1))
+            # The writer sets failure immediately after the failing write.
+            with trace._condition:
+                trace._condition.wait_for(lambda: trace._failure is not None, timeout=1)
+            return poc.HttpResult("broker_response", 200, "accepted")
+
+        with patch.object(trace, "_write", side_effect=fail_on_initiation):
+            report = self.fake_dispatch(trace, simulated_submit(submit), concurrency=1)
+        self.assertEqual(len(report.attempts), 1)
+        self.assertEqual(report.stop, "trace_writer_failed")
+        events = self.events(trace)
+        self.assertEqual(sum(e["event"] == "attempt_initiated" for e in events), 1)
+        self.assertEqual(sum(e["event"] == "attempt_result_completed" for e in events), 1)
+        self.assertEqual(trace.unwritten_events, 0)
+        self.assertNotIn("fake-private-writer-error", trace.path.read_text())
+
+    def test_exhausted_queue_stops_dispatch_without_dropping_buffered_events(self):
+        trace = self.new_trace(capacity=1)
+        entered, release = threading.Event(), threading.Event()
+        original = trace._write
+
+        def blocked(record):
+            entered.set()
+            release.wait(2)
+            original(record)
+
+        try:
+            with patch.object(trace, "_write", side_effect=blocked):
+                trace.emit("authentication_started")
+                self.assertTrue(entered.wait(1))
+                self.assertFalse(trace.emit("authentication_completed"))
+                cancel = threading.Event()
+                trace.bind_cancel(cancel)
+                self.assertTrue(cancel.is_set())
+                submit = Mock()
+                with self.assertRaisesRegex(poc.Blocked, "trace_queue_exhausted"):
+                    self.fake_dispatch(trace, submit)
+                submit.assert_not_called()
+                release.set()
+                events = self.events(trace)
+            self.assertEqual([e["event"] for e in events],
+                             ["run_started", "authentication_started", "authentication_completed"])
+            self.assertEqual(trace.unwritten_events, 0)
+        finally:
+            release.set()
+
+    def test_blocked_disk_writer_does_not_wait_in_dispatch_scheduler_or_workers(self):
+        trace = self.new_trace()
+        entered, release = threading.Event(), threading.Event()
+        original = trace._write
+
+        def blocked(record):
+            entered.set()
+            release.wait(2)
+            original(record)
+
+        try:
+            with patch.object(trace, "_write", side_effect=blocked):
+                trace.emit("authentication_started")
+                self.assertTrue(entered.wait(1))
+                report = self.fake_dispatch(trace, simulated_submit(lambda _: poc.HttpResult("broker_response", 200, "accepted")))
+                self.assertFalse(release.is_set())
+                self.assertEqual(len(report.attempts), 3)
+                self.assertTrue(all(a.result is not None for a in report.attempts))
+                self.assertEqual([a.initiated_ns for a in report.attempts], [0, 350_000_000, 700_000_000])
+                self.assertIsNone(trace.failure)
+                release.set()
+                events = self.events(trace)
+            self.assertEqual(sum(e["event"] == "attempt_result_completed" for e in events), 3)
+        finally:
+            release.set()
+
+    def test_authentication_failure_flushes_abort_without_private_exception_text(self):
+        with patch.object(poc, "authenticate_browser", side_effect=RuntimeError(FAKE_TOKEN)), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(poc.main(["--authenticate", "--live"]), 2)
+        path, = Path(self.trace_directory.name).glob("*.jsonl")
+        raw = path.read_text(encoding="utf-8")
+        events = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual([e["event"] for e in events], ["run_started", "authentication_started", "run_aborted"])
+        self.assertEqual(events[-1]["stop_category"], "unexpected_failure_no_retry")
+        self.assertNotIn(FAKE_TOKEN, raw + output.getvalue())
+
+    def test_close_failure_has_failure_exit_status_and_explicit_unwritten_count(self):
+        draft, symbol, market = fixtures()
+        order = poc.build_buy(draft, symbol, market, 100000000, 1000, 1000, poc.DESKTOP)
+        client = Mock(read_outcome="verified_money_and_drafts")
+        client.verify.return_value = [draft]
+        original = poc.RunTrace._write
+
+        def fail_final(trace, record):
+            if record["event"] == "run_aborted":
+                raise OSError("fake-private-final-flush")
+            original(trace, record)
+
+        with patch.object(poc.RunTrace, "_write", new=fail_final), \
+                patch.object(poc, "authenticate_browser", return_value=auth()), \
+                patch.object(poc, "NativeHttp", return_value=client), \
+                patch.object(poc, "preflight", return_value=poc.Preflight(order, 0)), \
+                patch.object(poc, "local_target", return_value=AT), \
+                patch.object(poc, "confirm_order", return_value=False), \
+                patch("builtins.input", side_effect=["1", "", "", "0.5", "340"]), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(poc.main(["--authenticate", "--live", "--diagnostics"]), 2)
+        client.submit.assert_not_called()
+        client.close.assert_called_once()
+        text = output.getvalue()
+        self.assertIn("trace writer failed", text)
+        self.assertIn("Trace events not persisted: 1", text)
+        self.assertNotIn("fake-private-final-flush", text)
+        diagnostics = json.loads(next(line for line in text.splitlines() if line.startswith("{")))
+        self.assertEqual(diagnostics["stop"], "trace_writer_failed")
+        self.assertEqual(diagnostics["trace_unwritten_events"], 1)
+
+    def test_partial_line_is_rolled_back_before_final_flush(self):
+        trace = self.new_trace()
+        failed = threading.Event()
+        original = trace._file.write
+
+        def partial(line):
+            original(line[:10])
+            failed.set()
+            raise OSError("fake-private-partial-write")
+
+        with patch.object(trace._file, "write", side_effect=partial):
+            trace.emit("authentication_started")
+            self.assertTrue(failed.wait(1))
+            with trace._condition:
+                self.assertTrue(trace._condition.wait_for(lambda: trace._failure is not None, timeout=1))
+        self.assertEqual([e["event"] for e in self.events(trace)], ["run_started", "authentication_started"])
+        self.assertEqual(trace.failure, "trace_writer_failed")
+        self.assertEqual(trace.unwritten_events, 0)
+
+    def test_terminal_event_seals_admission_for_late_worker_results(self):
+        trace = self.new_trace()
+        trace.emit("attempt_pending_at_snapshot", attempt_number=1, pending_at_snapshot=True,
+                   completed_result_available=False, worker_alive=True,
+                   completion_observation="until_trace_close")
+        trace.close(outcome="completed", stop_category="cutoff")
+        self.assertFalse(trace.emit("attempt_result_completed", attempt_number=1))
+        names = [e["event"] for e in self.events(trace)]
+        self.assertEqual(names, ["run_started", "attempt_pending_at_snapshot", "run_completed"])
+
+    def test_allowlist_excludes_private_fields_categories_and_exception_messages(self):
+        trace = self.new_trace()
+        private = "fake-private-token-cookie-broker-id-message"
+        result = poc.HttpResult(private, 200, private, 123, private)
+        self.fake_dispatch(trace, simulated_submit(lambda _: result))
+        trace.result("non_initiated_outcome", result, scheduled_attempt=4)
+        self.assertFalse(trace.emit("run_aborted", payload=private))
+        events = self.events(trace)
+        raw = trace.path.read_text(encoding="utf-8")
+        self.assertNotIn(private, raw)
+        self.assertNotIn("fake-private-payload", raw)
+        results = [e for e in events if e["event"] == "attempt_result_completed"]
+        self.assertTrue(all(e["transport"] == "other_transport_outcome" for e in results))
+        self.assertTrue(all(e["broker_acceptance"] == "unknown" for e in results))
+        self.assertTrue(all(e["rejection_category"] is None for e in results))
+        self.assertEqual(trace.failure, "trace_event_invalid")
+
+    def test_loopback_http_traces_only_sanitized_completion_facts(self):
+        for ack, expected in (({"isSuccessful": True, "id": "fake-private-broker-id"}, "accepted"),
+                              ({"isSuccessful": False, "message": "fake-private-message"}, "rejected"),
+                              ({"isSuccessful": True, "private": "fake-private-response"}, "unknown")):
+            with self.subTest(expected=expected), Server() as server:
+                server.ack = {**ack, "account": "fake-private-account", "balance": "fake-private-balance"}
+                client = server.client()
+                self.addCleanup(client.close)
+                client.verify()
+                trace = self.new_trace()
+                report = poc.dispatch(lambda body, begin: client.submit(body, approved=True, on_initiated=begin),
+                                      b'{"private":"fake-private-payload"}', poc.Window.from_inputs("0.01", 100),
+                                      time.perf_counter_ns(), approved=True, trace=trace)
+                event = next(e for e in self.events(trace) if e["event"] == "attempt_result_completed")
+                self.assertEqual(len(server.received), 1)
+                self.assertEqual(report.attempts[0].result.acceptance, expected)
+                self.assertEqual(event["broker_acceptance"], expected)
+                self.assertEqual(event["http_status"], 200)
+                self.assertGreater(event["elapsed_ns"], 0)
+                raw = trace.path.read_text(encoding="utf-8")
+                for secret in (FAKE_TOKEN, FAKE_COOKIE, ISIN, "fake-private", "TEST", "Authorization", "buyPowerT2"):
+                    self.assertNotIn(secret, raw)
 
 
 class ConsoleTests(OfflineCase):
