@@ -36,6 +36,7 @@ A decision's original statement remains historically intact. Superseded records 
 | D-028 | Excel-Hosted Mofid Opening-Order Proof of Concept | Accepted; implementation pending | [0028-excel-hosted-mofid-opening-order-poc.md](0028-excel-hosted-mofid-opening-order-poc.md) |
 | D-029 | Feature-Branch Source Delivery, Review, and Authorized Merge | Accepted | [0029-feature-branch-source-review-workflow.md](0029-feature-branch-source-review-workflow.md) |
 | D-030 | Native HTTP Opening-Order Reference and Excel Port Alignment | Accepted | [0030-native-http-opening-order-reference-and-excel-port.md](0030-native-http-opening-order-reference-and-excel-port.md) |
+| D-031 | Temporary Reopening of Direct HTTP Python POC for Reliability Validation | Accepted; temporary exception | [0031-temporary-reopening-of-direct-http-python-poc.md](0031-temporary-reopening-of-direct-http-python-poc.md) |
 
 ### D-027 / D-028 relationship
 
@@ -44,5 +45,7 @@ D-028 governs the specific Excel-hosted opening-order POC and supersedes only th
 D-029 supersedes only earlier conflicting source commit/push and merge-authority provisions. Earlier decisions remain preserved; PO-owned acceptance, ChatGPT's read-only source editing boundary, and documentation approval requirements remain in force.
 
 D-030 supplements D-028 for the native-HTTP Excel port. It designates the newer Python direct-HTTP POC as a read-only behavioral reference and records the post-login native transport, bounded request pacing, connection warmup, asynchronous outcome observation, and workbook-adjacent tracing requirements. D-030 supersedes only conflicting transport/dispatch and response-observation details for this port; D-028's approved UI, order, financial, safety, and four-project boundaries remain.
+
+D-031 temporarily reopens only `POC/easytrader_direct_http_poc.py` and `POC/test_easytrader_direct_http_poc.py` for the PO-approved, staged Python reliability-validation program. It supersedes D-030's conflicting read-only restriction only for those two files and only until the PO accepts the validation program or withdraws the authorization. The historical `POC/easytrader_poc.py` remains read-only; D-030 continues to govern the Excel/C# implementation.
 
 Future material decisions require PO approval before implementation. Use new numbered ADRs and explicit supersession when warranted.
