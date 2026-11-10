@@ -1437,6 +1437,210 @@ class TraceTests(OfflineCase):
                 for secret in (FAKE_TOKEN, FAKE_COOKIE, ISIN, "fake-private", "TEST", "Authorization", "buyPowerT2"):
                     self.assertNotIn(secret, raw)
 
+    def boundary_dispatch(self, client, trace, *, prepare=None):
+        clock = FakeClock()
+        callbacks, post_calls = [], []
+        original_request = poc.http.client.HTTPConnection.request
+
+        def request(connection, method, path, *args, **kwargs):
+            if method == "POST" and path == poc.ORDER:
+                post_calls.append(clock())
+            return original_request(connection, method, path, *args, **kwargs)
+
+        def submit(body, begin):
+            # Inspect only the pacing cell: rejected admission must not change
+            # it. HTTP calls, received orders, report and JSONL are checked too.
+            last = dict(zip(begin.__code__.co_freevars, begin.__closure__))["last"]
+
+            def boundary():
+                if prepare is not None:
+                    prepare()
+                before = last.cell_contents
+                allowed = begin()
+                callbacks.append((allowed, before, last.cell_contents))
+                return allowed
+
+            return client.submit(body, approved=True, on_initiated=boundary)
+
+        with patch.object(poc.http.client.HTTPConnection, "request", new=request):
+            report = poc.dispatch(submit, b"{}", poc.Window.from_inputs(1, 350), 0,
+                                  approved=True, concurrency=1, trace=trace, clock=clock,
+                                  pause=clock.advance, cancel=FakeCancel(clock))
+        return report, callbacks, post_calls
+
+    def assert_rejected_boundary(self, server, trace, report, callbacks, post_calls, category):
+        self.assertEqual(post_calls, [])
+        self.assertEqual(server.received, [])
+        self.assertEqual(callbacks, [(False, None, None)])
+        self.assertEqual(report.attempts, [])
+        self.assertEqual(report.scheduled_attempts, 1)
+        self.assertEqual(report.capacity_skips, 0)
+        self.assertEqual(report.non_initiated, ["initiation_cancelled_or_cutoff"])
+        self.assertEqual(report.stop, category)
+        events = self.events(trace)
+        self.assertFalse(any(e["event"] == "attempt_initiated" for e in events))
+        non_initiated = [e for e in events if e["event"] == "non_initiated_outcome"]
+        self.assertEqual(len(non_initiated), 1)
+        self.assertEqual(non_initiated[0]["scheduled_attempt"], 1)
+        self.assertEqual(non_initiated[0]["transport"], "initiation_cancelled_or_cutoff")
+        snapshot = next(e for e in events if e["event"] == "dispatch_report_snapshot")
+        self.assertEqual(snapshot["trace_failure"], category)
+        self.assertEqual(snapshot["initiated_attempts"], 0)
+        self.assertEqual(snapshot["scheduled_attempts"], 1)
+        self.assertEqual(snapshot["capacity_skips"], 0)
+        self.assertEqual(snapshot["pending_attempts"], 0)
+        self.assertEqual(snapshot["workers_still_running"], 0)
+        return events
+
+    def test_initiation_emit_refusal_prevents_http_post_and_preserves_pacing(self):
+        for category in ("trace_writer_failed", "trace_queue_exhausted", "trace_event_invalid"):
+            with self.subTest(category=category), Server() as server:
+                client = server.client()
+                self.addCleanup(client.close)
+                client.verify()
+                trace = self.new_trace()
+                original_emit = trace.emit
+
+                def refuse(event, **fields):
+                    if event == "attempt_initiated":
+                        with trace._condition:
+                            trace._fail(category)
+                        return False
+                    return original_emit(event, **fields)
+
+                with patch.object(trace, "emit", side_effect=refuse):
+                    report, callbacks, post_calls = self.boundary_dispatch(client, trace)
+                self.assert_rejected_boundary(server, trace, report, callbacks, post_calls, category)
+
+    def test_full_queue_at_initiation_admission_preserves_buffer_and_cleanup_reserve(self):
+        with Server() as server:
+            client = server.client()
+            self.addCleanup(client.close)
+            client.verify()
+            trace = self.new_trace(capacity=4)
+            entered, release = threading.Event(), threading.Event()
+            original_write = trace._write
+            buffered = []
+
+            def blocked(record):
+                entered.set()
+                if not release.wait(5):
+                    raise AssertionError("Writer release was not signalled")
+                original_write(record)
+
+            def fill_at_boundary():
+                self.assertTrue(entered.wait(5))
+                with trace._condition:
+                    for event in ("authentication_started", "authentication_completed", "native_verification_completed"):
+                        self.assertTrue(trace.emit(event))
+                    self.assertEqual(len(trace._pending), trace._capacity)
+                    self.assertIsNone(trace._failure)
+                    buffered.extend(dict(event) for event in trace._pending)
+
+            try:
+                with patch.object(trace, "_write", side_effect=blocked):
+                    report, callbacks, post_calls = self.boundary_dispatch(client, trace, prepare=fill_at_boundary)
+                    self.assertEqual(post_calls, [])
+                    with trace._condition:
+                        pending = list(trace._pending)
+                        self.assertEqual(pending[:4], buffered)
+                        self.assertGreater(len(pending), trace._capacity)
+                        self.assertTrue(any(e["event"] == "non_initiated_outcome" for e in pending))
+                        self.assertTrue(any(e["event"] == "dispatch_report_snapshot" for e in pending))
+                    release.set()
+                    events = self.assert_rejected_boundary(server, trace, report, callbacks, post_calls,
+                                                           "trace_queue_exhausted")
+                self.assertEqual(events[1:5], buffered)
+                self.assertEqual(trace.unwritten_events, 0)
+            finally:
+                release.set()
+
+    def writer_failure_at_boundary(self, *, admit_first):
+        with Server() as server:
+            client = server.client()
+            self.addCleanup(client.close)
+            client.verify()
+            trace = self.new_trace()
+            writing, release, published = (threading.Event() for _ in range(3))
+            original_write, original_fail, original_admit = trace._write, trace._fail, trace.admit_initiation
+            decisions = []
+
+            def fail_write(record):
+                if record["event"] == "dispatch_started":
+                    writing.set()
+                    if not release.wait(5):
+                        raise AssertionError("Initiation boundary was not reached")
+                    raise OSError("fake-offline-writer-failure")
+                original_write(record)
+
+            def publish(category):
+                original_fail(category)
+                if category == "trace_writer_failed":
+                    published.set()
+
+            def admission(**fields):
+                # This gate runs before taking the trace condition, while the
+                # dispatch lock is held. The writer must publish without needing
+                # that lock. The opposite ordering tests an admitted request.
+                self.assertTrue(writing.wait(5))
+                if admit_first:
+                    decision = original_admit(**fields)
+                release.set()
+                self.assertTrue(published.wait(5))
+                if not admit_first:
+                    decision = original_admit(**fields)
+                decisions.append(decision)
+                return decision
+
+            try:
+                with patch.object(trace, "_write", side_effect=fail_write), \
+                        patch.object(trace, "_fail", side_effect=publish), \
+                        patch.object(trace, "admit_initiation", side_effect=admission):
+                    report, callbacks, post_calls = self.boundary_dispatch(client, trace)
+                self.assertTrue(writing.is_set())
+                self.assertTrue(published.is_set())
+                self.assertEqual(decisions, [admit_first])
+                if not admit_first:
+                    self.assert_rejected_boundary(server, trace, report, callbacks, post_calls, "trace_writer_failed")
+                    return
+
+                # Admission succeeded before publication. The request remains
+                # in-flight even though failure precedes the actual HTTP call.
+                self.assertEqual(callbacks, [(True, None, 0)])
+                self.assertEqual(post_calls, [0])
+                self.assertEqual(len(server.received), 1)
+                self.assertEqual(len(report.attempts), 1)
+                self.assertEqual(report.attempts[0].result.acceptance, "accepted")
+                self.assertEqual(report.attempts[0].result.status, 200)
+                self.assertEqual(report.scheduled_attempts, 1)
+                self.assertEqual(report.capacity_skips, 0)
+                self.assertEqual(report.non_initiated, [])
+                self.assertEqual(report.stop, "trace_writer_failed")
+                self.assertFalse(original_admit(attempt_number=2))
+                events = self.events(trace)
+                starts = [e for e in events if e["event"] == "attempt_initiated"]
+                results = [e for e in events if e["event"] == "attempt_result_completed"]
+                self.assertEqual([e["attempt_number"] for e in starts], [1])
+                self.assertEqual([e["attempt_number"] for e in results], [1])
+                self.assertEqual(results[0]["broker_acceptance"], "accepted")
+                self.assertEqual(results[0]["http_status"], 200)
+                snapshot = next(e for e in events if e["event"] == "dispatch_report_snapshot")
+                self.assertEqual(snapshot["trace_failure"], "trace_writer_failed")
+                self.assertEqual(snapshot["initiated_attempts"], 1)
+                self.assertEqual(snapshot["completed_broker_acknowledgements"], 1)
+                self.assertEqual(snapshot["http_responses_observed"], 1)
+                self.assertEqual(snapshot["pending_attempts"], 0)
+                self.assertEqual(snapshot["workers_still_running"], 0)
+                self.assertEqual(trace.unwritten_events, 0)
+            finally:
+                release.set()
+
+    def test_writer_failure_published_at_boundary_rejects_initiation_without_post(self):
+        self.writer_failure_at_boundary(admit_first=False)
+
+    def test_admitted_initiation_survives_subsequent_writer_failure_and_records_result(self):
+        self.writer_failure_at_boundary(admit_first=True)
+
 
 class ConsoleTests(OfflineCase):
     def test_countdown_elapsed_and_request_count_are_read_from_monotonic_state(self):

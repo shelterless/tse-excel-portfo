@@ -237,6 +237,25 @@ class RunTrace:
             self._condition.notify()
             return self._failure is None
 
+    def admit_initiation(self, **fields):
+        """Atomically admit an initiation while healthy, ordered against _fail.
+
+        The condition uses an RLock, so emit validates and appends under the
+        same lock. Rejected initiations never consume the cleanup reserve.
+        Once admitted, the request is in-flight even if a later failure is
+        published before the HTTP call. No disk I/O occurs under this lock.
+        """
+        with self._condition:
+            if self._failure:
+                return False
+            if len(self._pending) >= self._capacity:
+                self._fail("trace_queue_exhausted")
+                return False
+            if not self.emit("attempt_initiated", **fields):
+                self._fail("trace_event_invalid")
+                return False
+            return True
+
     def result(self, event, result, **fields):
         self.emit(event, transport=(result.category if result.category in TRACE_TRANSPORTS
                                    else "other_transport_outcome"),
@@ -1106,16 +1125,20 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
             nonlocal last, attempt
             with lock:
                 stamp = clock()
-                if (cancel.is_set() or (trace is not None and trace.failure) or stamp >= cutoff
+                if (cancel.is_set() or stamp >= cutoff
                         or (last is not None and stamp - last < window.interval_ns)):
                     return False
-                attempt = Attempt(len(report.attempts) + 1, stamp)
+                attempt_number = len(report.attempts) + 1
+                if trace is not None and not trace.admit_initiation(
+                        attempt_number=attempt_number, scheduled_attempt=scheduled_number,
+                        scheduled_monotonic_ns=scheduled_ns, initiation_monotonic_ns=stamp,
+                        gap_ns=None if last is None else stamp - last):
+                    cancel.set()
+                    return False
+                attempt = Attempt(attempt_number, stamp)
                 report.attempts.append(attempt)
                 if trace is not None:
                     attempt_workers[attempt.number] = threading.current_thread()
-                    trace.emit("attempt_initiated", attempt_number=attempt.number,
-                               scheduled_attempt=scheduled_number, scheduled_monotonic_ns=scheduled_ns,
-                               initiation_monotonic_ns=stamp, gap_ns=None if last is None else stamp - last)
                 last = stamp
                 ready.set()
                 return True
