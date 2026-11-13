@@ -1274,7 +1274,7 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
         if progress is not None:
             progress.stage = "Ready"
         while not cancel.is_set() and clock() < cutoff:
-            if not wait_until(due, cancel, clock=clock, pause=pause) or clock() >= cutoff:
+            if not wait_until(min(due, cutoff), cancel, clock=clock, pause=pause) or clock() >= cutoff:
                 break
             report.scheduled_attempts += 1
             try:

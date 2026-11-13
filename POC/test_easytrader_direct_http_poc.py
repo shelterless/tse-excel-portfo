@@ -1131,6 +1131,23 @@ class TraceTests(OfflineCase):
                     ready = next(e for e in events if e["event"] == "connection_ready")
                     self.assertTrue(ready["reused_connection"])
 
+    def test_four_second_window_stops_waiting_at_cutoff_after_twelve_attempts(self):
+        clock = FakeClock()
+        trace = self.new_trace()
+        window = poc.Window.from_inputs(4, 350)
+        start = 100_000_000
+        cutoff = start + window.duration_ns
+        report = poc.dispatch(simulated_submit(lambda _: poc.HttpResult("broker_response", 200, "accepted")),
+                              b"{}", window, start, approved=True, concurrency=12, clock=clock,
+                              pause=clock.advance, cancel=FakeCancel(clock), trace=trace)
+
+        self.assertEqual(report.stop, "cutoff")
+        self.assertEqual(report.scheduled_attempts, 12)
+        self.assertEqual(report.capacity_skips, 0)
+        self.assertEqual([attempt.initiated_ns for attempt in report.attempts],
+                         [start + index * window.interval_ns for index in range(12)])
+        self.assertEqual(report.diagnostics()["snapshot_monotonic_ns"], cutoff)
+
     def test_four_second_window_reports_mixed_transport_outcomes_by_slot(self):
         trace = self.new_trace()
         with Server() as server:
