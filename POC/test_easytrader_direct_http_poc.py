@@ -91,6 +91,7 @@ class Server:
         self.lock = threading.Lock()
         self.delay = 0
         self.order_status = 200
+        self.order_responses = []
         self.money_status = 200
         self.money_body = None
         self.money_kind = "application/json"
@@ -148,18 +149,22 @@ class Server:
                 draft, symbol, market = fixtures()
                 if self.path == poc.ORDER:
                     with owner.lock:
+                        index = len(owner.received)
                         owner.received.append((time.perf_counter_ns(), body))
+                        status, ack, delay, drop = (owner.order_responses[index]
+                            if index < len(owner.order_responses)
+                            else (owner.order_status, owner.ack, owner.delay, owner.drop_order_response))
                         owner.active += 1
                         owner.max_active = max(owner.active, owner.max_active)
                     if owner.cancel_on_receive is not None:
                         owner.cancel_on_receive.set()
                     try:
-                        time.sleep(owner.delay)
-                        if owner.drop_order_response:
+                        time.sleep(delay)
+                        if drop:
                             self.close_connection = True
                             self.connection.shutdown(socket.SHUT_RDWR)
                         else:
-                            self.send(owner.order_status, owner.ack)
+                            self.send(status, ack)
                     finally:
                         with owner.lock:
                             owner.active -= 1
@@ -1061,8 +1066,9 @@ class TraceTests(OfflineCase):
         events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         names = [e["event"] for e in events]
         lifecycle = ["run_started", "authentication_started", "authentication_completed",
-                     "native_verification_completed", "preflight_completed", "user_confirmation",
-                     "connection_warmup_started", "connection_warmup_completed", "final_preflight_completed",
+                     "native_verification_completed", "window_configured", "preflight_completed", "user_confirmation",
+                     "connection_warmup_started", "connection_warmup_completed", "final_preflight_started",
+                     "final_preflight_completed", "connection_refresh_started", "connection_refresh_completed",
                      "dispatch_started", "dispatch_window_ended", "drain_started", "drain_completed",
                      "dispatch_report_snapshot", "run_completed"]
         self.assertEqual([n for n in names if n in lifecycle], lifecycle)
@@ -1070,6 +1076,105 @@ class TraceTests(OfflineCase):
         self.assertFalse(any(line.startswith("{") for line in output.getvalue().splitlines()))
         self.assertEqual(sum(n == "attempt_initiated" for n in names), 2)
         self.assertEqual(sum(n == "attempt_result_completed" for n in names), 2)
+
+    def test_final_preflight_closed_connection_is_replaced_before_dispatch(self):
+        for refresh_fails in (False, True):
+            with self.subTest(refresh_fails=refresh_fails), Server() as server:
+                client = server.client()
+                handler = server.httpd.RequestHandlerClass
+                original_send = handler.send
+                original_connect = poc.http.client.HTTPConnection.connect
+                money_reads = 0
+                closed = threading.Event()
+                connections_after_close = []
+
+                def send(connection, status, body, kind="application/json", extra=None):
+                    nonlocal money_reads
+                    if connection.path == poc.MONEY:
+                        money_reads += 1
+                        if money_reads == 3:
+                            extra = {**(extra or {}), "Connection": "close"}
+                            connection.close_connection = True
+                            closed.set()
+                    return original_send(connection, status, body, kind, extra)
+
+                def connect(connection):
+                    if closed.is_set():
+                        connections_after_close.append(threading.current_thread().name)
+                        if refresh_fails:
+                            raise OSError("fake-offline-refresh-failure")
+                    return original_connect(connection)
+
+                with patch.object(handler, "send", new=send), \
+                        patch.object(poc.http.client.HTTPConnection, "connect", new=connect), \
+                        patch.object(poc, "authenticate_browser", return_value=auth()), \
+                        patch.object(poc, "NativeHttp", return_value=client), \
+                        patch.object(poc, "local_target", return_value=AT), \
+                        patch.object(poc, "monotonic_target", side_effect=lambda _: time.perf_counter_ns() + 900_000_000), \
+                        patch.object(poc, "confirm_order", return_value=True), \
+                        patch("builtins.input", side_effect=["1", "", "", "1", "1000"]), \
+                        contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(poc.main(["--authenticate", "--live", "--diagnostics"]), 2 if refresh_fails else 0)
+                self.assertTrue(closed.is_set())
+                self.assertEqual(connections_after_close, ["native-connect"])
+                self.assertEqual(len(server.received), 0 if refresh_fails else 1)
+                details = json.loads(next(line for line in output.getvalue().splitlines() if line.startswith("{")))
+                path, = Path(self.trace_directory.name).glob(f"*_{details['run_id']}*.jsonl")
+                events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+                names = [e["event"] for e in events]
+                if refresh_fails:
+                    self.assertEqual(details["stop"], "transport_failure")
+                    self.assertNotIn("dispatch_started", names)
+                    self.assertNotIn("attempt_initiated", names)
+                else:
+                    self.assertLess(names.index("connection_refresh_completed"), names.index("dispatch_started"))
+                    ready = next(e for e in events if e["event"] == "connection_ready")
+                    self.assertTrue(ready["reused_connection"])
+
+    def test_four_second_window_reports_mixed_transport_outcomes_by_slot(self):
+        trace = self.new_trace()
+        with Server() as server:
+            server.order_responses = [
+                (200, {"isSuccessful": False, "message": "محدوده زمانی سفارش معتبر نمی‌باشد!"}, .6, False),
+                (200, {"isSuccessful": True, "id": "fake-offline-broker-id"}, .6, False),
+                (200, {}, 0, True),
+                (400, {"private": "fake-offline-response-body"}, 0, False),
+            ]
+            client = server.client()
+            self.addCleanup(client.close)
+            draft = client.verify()[0]
+            window = poc.Window.from_inputs(4, 350)
+            order = poc.preflight(client, draft, 1000, 1000).order
+            client.warm_connections(client.dispatch_capacity(window), time.perf_counter_ns() + 2_000_000_000)
+            fresh = poc.preflight(client, draft, 1000, 1000)
+            start = time.perf_counter_ns() + 150_000_000
+            client.warm_connections(client.dispatch_capacity(window), start)
+            report = poc.live_dispatch(client, order, fresh, window, start, confirmed=True, trace=trace)
+            self.assertEqual(len(server.received), 12)
+            self.assertGreaterEqual(server.max_active, 2)
+        details = report.diagnostics()
+        rows = details["rows"]
+        self.assertEqual([row["state"] for row in rows[:4]], ["rejected", "accepted", "unknown", "unknown"])
+        self.assertEqual(rows[0]["rejection_reason"], "market_entry_time")
+        self.assertEqual(rows[2]["transport"], "transport_failure")
+        self.assertEqual(rows[3]["http_status"], 400)
+        events = self.events(trace)
+        first = [e["event"] for e in events if e.get("scheduled_attempt") == 1]
+        self.assertEqual(first, ["attempt_assigned", "connection_ready", "attempt_initiated",
+                                 "http_request_returned", "http_headers_received", "attempt_result_completed"])
+        failed = next(e for e in events if e["event"] == "http_exchange_failed")
+        self.assertEqual((failed["scheduled_attempt"], failed["exchange_phase"]), (3, "headers"))
+        snapshot = next(e for e in events if e["event"] == "dispatch_report_snapshot")
+        self.assertEqual(snapshot["initiated_attempts"], details["local_initiations"])
+        self.assertEqual(snapshot["completed_unknown_outcomes"], details["completed_unknown_outcomes"])
+        self.assertEqual(snapshot["pending_attempts"], details["pending_attempts"])
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            poc.print_live_summary(report)
+        self.assertIn("accepted 9 | rejected 1 | unknown 2", output.getvalue())
+        self.assertIn("Pending after drain: 0", output.getvalue())
+        raw = trace.path.read_text(encoding="utf-8")
+        self.assertNotIn("fake-offline-broker-id", raw)
+        self.assertNotIn("fake-offline-response-body", raw)
 
     def test_attempt_correlation_timestamps_gaps_and_snapshot_counts(self):
         trace = self.new_trace()
@@ -1182,6 +1287,8 @@ class TraceTests(OfflineCase):
             with patch.object(trace, "result", side_effect=observe):
                 release.set()
                 self.assertTrue(done.wait(1))
+            self.assertEqual(report.diagnostics()["rows"][0]["state"], "pending")
+            self.assertEqual(report.diagnostics()["pending_attempts"], 1)
             names = [e["event"] for e in self.events(trace)]
             self.assertLess(names.index("dispatch_report_snapshot"), names.index("attempt_result_completed"))
         finally:
@@ -1517,7 +1624,7 @@ class TraceTests(OfflineCase):
             client = server.client()
             self.addCleanup(client.close)
             client.verify()
-            trace = self.new_trace(capacity=4)
+            trace = self.new_trace(capacity=5)
             entered, release = threading.Event(), threading.Event()
             original_write = trace._write
             buffered = []
@@ -1543,14 +1650,14 @@ class TraceTests(OfflineCase):
                     self.assertEqual(post_calls, [])
                     with trace._condition:
                         pending = list(trace._pending)
-                        self.assertEqual(pending[:4], buffered)
+                        self.assertEqual(pending[:5], buffered)
                         self.assertGreater(len(pending), trace._capacity)
                         self.assertTrue(any(e["event"] == "non_initiated_outcome" for e in pending))
                         self.assertTrue(any(e["event"] == "dispatch_report_snapshot" for e in pending))
                     release.set()
                     events = self.assert_rejected_boundary(server, trace, report, callbacks, post_calls,
                                                            "trace_queue_exhausted")
-                self.assertEqual(events[1:5], buffered)
+                self.assertEqual(events[1:6], buffered)
                 self.assertEqual(trace.unwritten_events, 0)
             finally:
                 release.set()
@@ -1675,7 +1782,8 @@ class ConsoleTests(OfflineCase):
             poc.Attempt(4, 4, poc.HttpResult("broker_response", 200, "rejected", rejection_reason="unspecified"))])
         with contextlib.redirect_stdout(io.StringIO()) as out:
             poc.print_live_summary(report)
-        self.assertIn("accepted 1 | rejected 2 | unknown 1", out.getvalue())
+        self.assertIn("accepted 1 | rejected 2 | unknown 0", out.getvalue())
+        self.assertIn("Pending after drain: 1", out.getvalue())
         self.assertIn("Execution/fills were not verified", out.getvalue())
         self.assertIn("no cause was assumed", out.getvalue())
         self.assertNotIn('"attempts":', out.getvalue())

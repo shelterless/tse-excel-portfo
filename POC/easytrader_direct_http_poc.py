@@ -119,17 +119,23 @@ class RunTrace:
     EVENTS = frozenset("""run_started authentication_started authentication_completed
         native_verification_completed preflight_completed user_confirmation
         connection_warmup_started connection_warmup_completed final_preflight_completed
+        window_configured final_preflight_started connection_refresh_started connection_refresh_completed
         dispatch_started dispatch_window_ended drain_started drain_completed
         drain_deadline_reached dispatch_report_snapshot run_completed run_aborted
         attempt_initiated attempt_result_completed attempt_pending_at_snapshot
-        capacity_skipped non_initiated_outcome""".split())
+        capacity_skipped non_initiated_outcome attempt_assigned connection_ready
+        http_request_returned http_headers_received http_exchange_failed
+        attempt_pending_before_initiation""".split())
     NUMBERS = frozenset("""attempt_number scheduled_attempt scheduled_monotonic_ns
         initiation_monotonic_ns gap_ns completion_monotonic_ns elapsed_ns
         planned_attempts scheduled_attempts initiated_attempts capacity_skips
         worker_capacity http_responses_observed completed_broker_acknowledgements
         completed_unknown_outcomes pending_attempts workers_still_running
-        start_monotonic_ns cutoff_monotonic_ns drain_seconds snapshot_monotonic_ns""".split())
-    FLAGS = frozenset({"confirmed", "pending_at_snapshot", "worker_alive", "completed_result_available"})
+        start_monotonic_ns cutoff_monotonic_ns drain_seconds snapshot_monotonic_ns
+        target_epoch_seconds local_utc_offset_seconds duration_ns interval_ns
+        pending_before_initiation non_initiated_attempts""".split())
+    FLAGS = frozenset({"confirmed", "pending_at_snapshot", "worker_alive", "completed_result_available",
+                       "reused_connection"})
     ENUMS = {
         "transport": TRACE_TRANSPORTS | {"other_transport_outcome"},
         "broker_acceptance": {"accepted", "rejected", "unknown"},
@@ -138,6 +144,7 @@ class RunTrace:
         "completion_observation": {"until_trace_close"},
         "stop_category": TRACE_STOPS,
         "trace_failure": {"trace_writer_failed", "trace_queue_exhausted", "trace_event_invalid"},
+        "exchange_phase": {"pool", "prepare", "connect", "admission", "send", "headers", "body"},
     }
 
     def __init__(self, run_id, *, directory=None, capacity=4096):
@@ -608,16 +615,21 @@ class NativeHttp:
             finally:
                 self._release(conn, reusable)
 
+        handed_off = 0
         try:
             for conn in borrowed:
-                worker = threading.Thread(target=warm_slot, args=(conn,), daemon=True, name="native-connect")
-                worker.start()
-                workers.append(worker)
+                if conn is not None and conn.sock is not None:
+                    self._release(conn, True)
+                else:
+                    worker = threading.Thread(target=warm_slot, args=(conn,), daemon=True, name="native-connect")
+                    worker.start()
+                    workers.append(worker)
+                handed_off += 1
         except RuntimeError:
             self.verified = False
             raise Blocked("connection_warmup_failed") from None
         finally:
-            for conn in borrowed[len(workers):]:
+            for conn in borrowed[handed_off:]:
                 self._release(conn, True)
         for worker in workers:
             worker.join(max(0, (deadline_ns - time.perf_counter_ns()) / 1e9))
@@ -628,16 +640,19 @@ class NativeHttp:
             self.verified = False
             raise Blocked(errors[0])
 
-    def _exchange(self, method, path, body=None, before_request=None):
+    def _exchange(self, method, path, body=None, before_request=None, observe=None):
         with self._lock:
             if self._closed:
                 raise Blocked("transport_closed")
         try:
             conn = self._pool.get(timeout=self._timeout)
         except queue.Empty:
+            if observe is not None:
+                observe("http_exchange_failed", exchange_phase="pool", transport="connection_capacity_timeout")
             raise Blocked("connection_capacity_timeout") from None
         reusable = False
         status = None
+        phase = "prepare"
         try:
             conn = conn or self._connection()
             request = Request(self.api_origin + path)
@@ -654,13 +669,25 @@ class NativeHttp:
             if conn.sock is not None:
                 conn.sock.settimeout(self._timeout)
             deadline = time.perf_counter() + self._timeout
-            if conn.sock is None:
+            reused = conn.sock is not None
+            phase = "connect"
+            if not reused:
                 conn.connect()
+            if observe is not None:
+                observe("connection_ready", reused_connection=reused)
+            phase = "admission"
             if before_request is not None and not before_request():
                 raise Blocked("initiation_cancelled_or_cutoff")
+            phase = "send"
             conn.request(method, path, body=body, headers=headers)
+            if observe is not None:
+                observe("http_request_returned")
+            phase = "headers"
             response = conn.getresponse()
             status = response.status
+            if observe is not None:
+                observe("http_headers_received", http_status=status)
+            phase = "body"
             with self._lock:
                 self._auth.cookies.extract_cookies(response, request)
             if not 200 <= status < 300:
@@ -684,15 +711,18 @@ class NativeHttp:
                     break
             reusable = not response.will_close
             return response.status, response.getheader("Content-Type", ""), bytes(raw)
-        except Blocked as exc:
-            exc.status = status
-            raise
-        except ssl.SSLError:
-            raise Blocked("tls_failure", status) from None
-        except (TimeoutError, socket.timeout):
-            raise Blocked("transport_timeout", status) from None
-        except (OSError, http.client.HTTPException):
-            raise Blocked("transport_failure", status) from None
+        except (Blocked, OSError, http.client.HTTPException) as exc:
+            if isinstance(exc, Blocked):
+                category = exc.category
+            elif isinstance(exc, ssl.SSLError):
+                category = "tls_failure"
+            elif isinstance(exc, TimeoutError):
+                category = "transport_timeout"
+            else:
+                category = "transport_failure"
+            if observe is not None:
+                observe("http_exchange_failed", exchange_phase=phase, transport=category, http_status=status)
+            raise Blocked(category, status) from None
         finally:
             self._release(conn, reusable)
 
@@ -732,14 +762,14 @@ class NativeHttp:
         self.verified, self.read_outcome = True, "verified_money_and_drafts"
         return drafts
 
-    def submit(self, body, *, approved=False, on_initiated=None):
+    def submit(self, body, *, approved=False, on_initiated=None, observe=None):
         if not self.live_enabled or not approved:
             return HttpResult("explicit_live_authorization_required")
         if not self.verified:
             return HttpResult("native_verification_required")
         status = None
         try:
-            status, kind, raw = self._exchange("POST", ORDER, body, before_request=on_initiated)
+            status, kind, raw = self._exchange("POST", ORDER, body, before_request=on_initiated, observe=observe)
             self._status(status)
             data = parse_json(raw, kind)
             if not isinstance(data, dict) or type(data.get("isSuccessful")) is not bool:
@@ -953,6 +983,7 @@ class Attempt:
     number: int
     initiated_ns: int
     result: HttpResult | None = None
+    scheduled_attempt: int | None = None
 
 
 @dataclass
@@ -964,25 +995,51 @@ class DispatchReport:
     scheduled_attempts: int = 0
     non_initiated: list[str] = field(default_factory=list)
     worker_capacity: int = 0
+    skipped: set[int] = field(default_factory=set)
+    non_initiated_by_slot: dict[int, str] = field(default_factory=dict)
+    _snapshot: dict | None = field(default=None, init=False, repr=False)
 
-    def diagnostics(self):
-        # Called only after scheduling and bounded draining. No payloads or IDs.
-        snapshot = [(a.number, a.initiated_ns, a.result) for a in tuple(self.attempts)]
+    def _collect(self):
+        snapshot = [(a.number, a.initiated_ns, a.result, a.scheduled_attempt) for a in self.attempts]
+        slots = {slot: (n, r) for n, _, r, slot in snapshot if slot is not None}
+        rows = []
+        for slot in range(1, self.scheduled_attempts + 1):
+            number, result = slots.get(slot, (None, None))
+            if number is not None:
+                state = result.acceptance if result else "pending"
+                detail = result.category if result else None
+            elif slot in self.skipped:
+                state, detail = "capacity_skipped", None
+            elif slot in self.non_initiated_by_slot:
+                state, detail = "not_initiated", self.non_initiated_by_slot[slot]
+            else:
+                state, detail = "pending_before_initiation", None
+            rows.append({"scheduled_attempt": slot, "attempt_number": number, "state": state,
+                         "transport": detail, "http_status": result.status if result else None,
+                         "rejection_reason": result.rejection_reason if result else None})
         return {"theoretical_attempts": self.planned, "local_initiations": len(snapshot),
                 "stop": self.stop, "capacity_skips": self.capacity_skips,
                 "scheduled_attempts": self.scheduled_attempts,
                 "worker_capacity": self.worker_capacity,
                 "non_initiated_outcomes": list(self.non_initiated),
-                "http_responses_observed": sum(r is not None and r.status is not None for _, _, r in snapshot),
-                "broker_results_observed": sum(r is not None and r.acceptance != "unknown" for _, _, r in snapshot),
-                "broker_results_unknown": sum(r is None or r.acceptance == "unknown" for _, _, r in snapshot),
-                "attempts": [{"number": n, "monotonic_ns": stamp,
+                "http_responses_observed": sum(r is not None and r.status is not None for _, _, r, _ in snapshot),
+                "broker_results_observed": sum(r is not None and r.acceptance != "unknown" for _, _, r, _ in snapshot),
+                "broker_results_unknown": sum(r is None or r.acceptance == "unknown" for _, _, r, _ in snapshot),
+                "pending_attempts": sum(r is None for _, _, r, _ in snapshot),
+                "pending_before_initiation": sum(row["state"] == "pending_before_initiation" for row in rows),
+                "completed_unknown_outcomes": sum(r is not None and r.acceptance == "unknown" for _, _, r, _ in snapshot),
+                "rows": rows,
+                "attempts": [{"number": n, "monotonic_ns": stamp, "scheduled_attempt": slot,
                               "transport": r.category if r else "outstanding_unknown",
                               "http_status": r.status if r else None,
                               "completion_monotonic_ns": r.completed_ns if r else None,
                               "broker_acceptance": r.acceptance if r else "unknown",
                               "rejection_reason": r.rejection_reason if r else None,
-                              "execution": "unknown"} for n, stamp, r in snapshot]}
+                              "execution": "unknown"} for n, stamp, r, slot in snapshot]}
+
+    def diagnostics(self):
+        # A late worker can add a trace event, but cannot rewrite the drain snapshot.
+        return {**(self._snapshot if self._snapshot is not None else self._collect()), "stop": self.stop}
 
 
 def format_duration(nanoseconds):
@@ -1064,25 +1121,32 @@ def print_live_summary(report):
     outcomes = data["attempts"]
     accepted = sum(a["broker_acceptance"] == "accepted" for a in outcomes)
     rejected = sum(a["broker_acceptance"] == "rejected" for a in outcomes)
-    unknown = len(outcomes) - accepted - rejected
+    unknown = data["completed_unknown_outcomes"]
     stop = "configured duration ended" if report.stop == "cutoff" else report.stop.replace('_', ' ')
     print(f"Window finished ({stop}). "
           f"Requests initiated: {len(outcomes)} / planned {report.planned}.")
     print(f"Broker responses: accepted {accepted} | rejected {rejected} | unknown {unknown}.")
+    print(f"Pending after drain: {data['pending_attempts']}.")
+    if data["rows"]:
+        print("Scheduled | Attempt | Outcome | HTTP | Detail")
+        for row in data["rows"]:
+            detail = row["rejection_reason"] or row["transport"] or "-"
+            print(f"{row['scheduled_attempt']:>9} | {str(row['attempt_number'] or '-'):>7} | "
+                  f"{row['state']} | {row['http_status'] or '-'} | {detail}")
     if any(a["rejection_reason"] == "market_entry_time" for a in outcomes):
         print("Broker rejection reason: order time window is invalid.")
     if any(a["rejection_reason"] == "unspecified" for a in outcomes):
         print("The broker rejected requests without a recognized public reason; no cause was assumed.")
     if report.capacity_skips:
         print(f"Skipped scheduled calls while all workers were occupied: {report.capacity_skips}.")
-    if unknown:
+    if unknown or data["pending_attempts"]:
         print("Unknown outcomes must not be replayed automatically.")
     print("Execution/fills were not verified. Check broker orders independently.")
 
 
 def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
              concurrency=4, drain_seconds=4.0, clock=time.perf_counter_ns, pause=time.sleep, progress=None,
-             trace=None):
+             trace=None, observe_transport=False):
     """No response-driven scheduling, queue, catch-up, retry, or console work.
 
     submit(body, before_request) must call before_request immediately before
@@ -1135,7 +1199,7 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
                         gap_ns=None if last is None else stamp - last):
                     cancel.set()
                     return False
-                attempt = Attempt(attempt_number, stamp)
+                attempt = Attempt(attempt_number, stamp, scheduled_attempt=scheduled_number)
                 report.attempts.append(attempt)
                 if trace is not None:
                     attempt_workers[attempt.number] = threading.current_thread()
@@ -1143,9 +1207,16 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
                 ready.set()
                 return True
 
+        def observe(event, **fields):
+            trace.emit(event, scheduled_attempt=scheduled_number,
+                       attempt_number=attempt.number if attempt else None, **fields)
+
         try:
             try:
-                result = submit(body, before_request)
+                if trace is not None and observe_transport:
+                    result = submit(body, before_request, observe)
+                else:
+                    result = submit(body, before_request)
             except Exception:
                 result = HttpResult("transport_failure")
             with lock:
@@ -1154,10 +1225,12 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
                     if trace is not None:
                         completed = result.completed_ns if result.completed_ns is not None else clock()
                         trace.result("attempt_result_completed", result, attempt_number=attempt.number,
+                                     scheduled_attempt=scheduled_number,
                                      completion_monotonic_ns=completed,
                                      elapsed_ns=max(0, completed - attempt.initiated_ns))
                 else:
                     report.non_initiated.append(result.category)
+                    report.non_initiated_by_slot[scheduled_number] = result.category
                     if trace is not None:
                         trace.result("non_initiated_outcome", result, scheduled_attempt=scheduled_number,
                                      scheduled_monotonic_ns=scheduled_ns)
@@ -1208,6 +1281,7 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
                 inbox = idle.get_nowait()
             except queue.Empty:
                 report.capacity_skips += 1
+                report.skipped.add(report.scheduled_attempts)
                 if trace is not None:
                     trace.emit("capacity_skipped", scheduled_attempt=report.scheduled_attempts,
                                scheduled_monotonic_ns=due)
@@ -1215,6 +1289,9 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
                 continue
             ready = threading.Event()
             initiated_before = len(report.attempts)
+            if trace is not None:
+                trace.emit("attempt_assigned", scheduled_attempt=report.scheduled_attempts,
+                           scheduled_monotonic_ns=due)
             inbox.put_nowait((ready, due, report.scheduled_attempts))
             while not ready.wait(.01):
                 if cancel.is_set() or clock() >= cutoff:
@@ -1242,29 +1319,38 @@ def dispatch(submit, body, window, start_ns, *, approved=False, cancel=None,
                 cancel.set()
                 report.stop = "cancelled_during_cleanup"
                 break
-        if trace is not None:
-            with lock:
+        with lock:
+            if trace is not None:
                 if trace.failure:
                     report.stop = trace.failure
                 snapshot_ns = clock()
                 running = sum(worker.is_alive() for worker in workers)
                 trace.emit("drain_deadline_reached" if running else "drain_completed",
                            workers_still_running=running)
-                snapshot = [a.result for a in report.attempts]
+            snapshot = report._snapshot = report._collect()
+            if trace is not None:
+                snapshot["snapshot_monotonic_ns"] = snapshot_ns
                 for attempt in report.attempts:
                     if attempt.result is None:
                         trace.emit("attempt_pending_at_snapshot", attempt_number=attempt.number,
+                                   scheduled_attempt=attempt.scheduled_attempt,
                                    pending_at_snapshot=True, completed_result_available=False,
                                    completion_observation="until_trace_close",
                                    worker_alive=attempt_workers[attempt.number].is_alive(),
                                    snapshot_monotonic_ns=snapshot_ns)
+                for row in snapshot["rows"]:
+                    if row["state"] == "pending_before_initiation":
+                        trace.emit("attempt_pending_before_initiation", scheduled_attempt=row["scheduled_attempt"],
+                                   snapshot_monotonic_ns=snapshot_ns)
                 trace.emit("dispatch_report_snapshot", planned_attempts=report.planned,
-                           scheduled_attempts=report.scheduled_attempts, initiated_attempts=len(snapshot),
+                           scheduled_attempts=report.scheduled_attempts, initiated_attempts=snapshot["local_initiations"],
                            capacity_skips=report.capacity_skips, worker_capacity=report.worker_capacity,
-                           http_responses_observed=sum(r is not None and r.status is not None for r in snapshot),
-                           completed_broker_acknowledgements=sum(r is not None and r.acceptance != "unknown" for r in snapshot),
-                           completed_unknown_outcomes=sum(r is not None and r.acceptance == "unknown" for r in snapshot),
-                           pending_attempts=sum(r is None for r in snapshot), workers_still_running=running,
+                           http_responses_observed=snapshot["http_responses_observed"],
+                           completed_broker_acknowledgements=snapshot["broker_results_observed"],
+                           completed_unknown_outcomes=snapshot["completed_unknown_outcomes"],
+                           pending_attempts=snapshot["pending_attempts"], workers_still_running=running,
+                           pending_before_initiation=snapshot["pending_before_initiation"],
+                           non_initiated_attempts=len(snapshot["non_initiated_outcomes"]),
                            snapshot_monotonic_ns=snapshot_ns, trace_failure=trace.failure,
                            stop_category=report.stop if report.stop in TRACE_STOPS else "other_failure")
                 if trace.failure:
@@ -1284,9 +1370,12 @@ def live_dispatch(client, approved_order, fresh, window, start_ns, *, confirmed=
     if approved_order.order_from != (34 if client.origin == DESKTOP else 33):
         raise Blocked("client_identity_changed")
     body = decimal_json(approved_order.payload(datetime.now().astimezone())).encode()
-    return dispatch(lambda data, begin: client.submit(data, approved=True, on_initiated=begin), body, window, start_ns,
+    def submit(data, begin, observe=None):
+        return client.submit(data, approved=True, on_initiated=begin, observe=observe)
+
+    return dispatch(submit, body, window, start_ns,
                     approved=True, cancel=cancel, concurrency=client.dispatch_capacity(window), progress=progress,
-                    trace=trace)
+                    trace=trace, observe_transport=True)
 
 
 def confirm_order():
@@ -1371,6 +1460,9 @@ def main(argv=None):
         target = local_target()
         window = Window.from_inputs(input("Duration seconds [5]: ").strip() or "5",
                                     input("Minimum interval milliseconds [350]: ").strip() or "350")
+        stage("window_configured", target_epoch_seconds=int(target.timestamp()),
+              local_utc_offset_seconds=int(target.utcoffset().total_seconds()),
+              duration_ns=window.duration_ns, interval_ns=window.interval_ns, planned_attempts=window.attempts)
         if args.live and window.interval_ns < MIN_LIVE_INTERVAL_NS:
             raise Blocked("live_interval_below_300_ms")
         initial = preflight(client, draft, quantity, price)
@@ -1407,8 +1499,18 @@ def main(argv=None):
                 if cancel.is_set():
                     raise Blocked("cancelled")
                 progress.stage = "Final preflight"
+                stage("final_preflight_started")
                 fresh = preflight(client, draft, quantity, price)
                 stage("final_preflight_completed")
+                if cancel.is_set():
+                    raise Blocked("cancelled")
+                progress.stage = "Refreshing connections"
+                stage("connection_refresh_started")
+                # Replace any pool entries closed by the final reads before the window.
+                client.warm_connections(client.dispatch_capacity(window), start_ns)
+                stage("connection_refresh_completed")
+                if cancel.is_set():
+                    raise Blocked("cancelled")
                 report = live_dispatch(client, order, fresh, window, start_ns, confirmed=True, cancel=cancel,
                                        progress=progress, trace=trace)
             diagnostics.update(report.diagnostics())
