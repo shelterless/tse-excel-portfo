@@ -1,2 +1,4 @@
 **/bin/
 **/obj/
+POC/logs/
+__pycache__
