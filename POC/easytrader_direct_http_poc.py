@@ -143,6 +143,12 @@ class RunTrace:
         "transport": TRACE_TRANSPORTS | {"other_transport_outcome"},
         "broker_acceptance": {"accepted", "rejected", "unknown"},
         "rejection_category": {"market_entry_time", "unspecified"},
+        "rejection_message_state": {"recognized", "unrecognized", "unavailable"},
+        "acknowledgement_issue": {
+            "response_not_object", "success_flag_missing", "success_flag_wrong_type",
+            "order_id_missing", "order_id_wrong_type", "order_id_invalid_format",
+        },
+        "acknowledgement_field_type": {"object", "array", "boolean", "number", "string", "null"},
         "outcome": {"completed", "aborted", "confirmation_cancelled"},
         "completion_observation": {"until_trace_close"},
         "stop_category": TRACE_STOPS,
@@ -274,7 +280,13 @@ class RunTrace:
                   http_status=result.status if type(result.status) is int and 100 <= result.status <= 599 else None,
                   broker_acceptance=(result.acceptance if result.acceptance in {"accepted", "rejected"} else "unknown"),
                   rejection_category=(result.rejection_reason if result.rejection_reason in
-                                      {"market_entry_time", "unspecified"} else None), **fields)
+                                      self.ENUMS["rejection_category"] else None),
+                  rejection_message_state=(result.rejection_message_state if result.rejection_message_state in
+                                           self.ENUMS["rejection_message_state"] else None),
+                  acknowledgement_issue=(result.acknowledgement_issue if result.acknowledgement_issue in
+                                         self.ENUMS["acknowledgement_issue"] else None),
+                  acknowledgement_field_type=(result.acknowledgement_field_type if result.acknowledgement_field_type in
+                                              self.ENUMS["acknowledgement_field_type"] else None), **fields)
 
     def check(self):
         if self.failure:
@@ -506,9 +518,12 @@ class HttpResult:
     acceptance: str = "unknown"
     completed_ns: int | None = None
     rejection_reason: str | None = None
+    rejection_message_state: str | None = None
+    acknowledgement_issue: str | None = None
+    acknowledgement_field_type: str | None = None
 
 
-def rejection_reason(data):
+def classify_rejection(data):
     """Recognize only the public timing error evidenced by the PO's screenshot.
 
     Do not export arbitrary broker messages: they can contain private data.
@@ -520,13 +535,46 @@ def rejection_reason(data):
         messages.append(errors)
     elif isinstance(errors, list):
         messages.extend(e.get("error") for e in errors[:3] if isinstance(e, dict))
+    has_message = False
     for message in messages:
         if not isinstance(message, str):
             continue
-        normalized = "".join(message[:4000].replace("\u200c", " ").replace("ي", "ی").split())
+        normalized = "".join(c for c in message[:4000].replace("ي", "ی") if c.isalnum())
+        has_message |= bool(normalized)
         if "محدودهزمانیسفارشمعتبرنمیباشد" in normalized:
-            return "market_entry_time"
-    return "unspecified"
+            return "market_entry_time", "recognized"
+    return "unspecified", "unrecognized" if has_message else "unavailable"
+
+
+def json_value_type(value):
+    # parse_json returns only these types. Never expose the value or a type name.
+    return {dict: "object", list: "array", bool: "boolean", int: "number",
+            Decimal: "number", str: "string", type(None): "null"}[type(value)]
+
+
+def classify_order_response(data, status):
+    def malformed(issue, field_type=None):
+        return HttpResult("malformed_acknowledgement", status, completed_ns=time.perf_counter_ns(),
+                          acknowledgement_issue=issue, acknowledgement_field_type=field_type)
+
+    if not isinstance(data, dict):
+        return malformed("response_not_object", json_value_type(data))
+    if "isSuccessful" not in data:
+        return malformed("success_flag_missing")
+    success = data["isSuccessful"]
+    if type(success) is not bool:
+        return malformed("success_flag_wrong_type", json_value_type(success))
+    if not success:
+        reason, message_state = classify_rejection(data)
+        return HttpResult("broker_response", status, "rejected", time.perf_counter_ns(), reason, message_state)
+    if "id" not in data:
+        return malformed("order_id_missing")
+    order_id = data["id"]
+    if not isinstance(order_id, str):
+        return malformed("order_id_wrong_type", json_value_type(order_id))
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", order_id):
+        return malformed("order_id_invalid_format", "string")
+    return HttpResult("broker_response", status, "accepted", time.perf_counter_ns())
 
 
 class NativeHttp:
@@ -805,15 +853,7 @@ class NativeHttp:
         try:
             status, kind, raw = self._exchange("POST", ORDER, body, before_request=on_initiated, observe=observe)
             self._status(status)
-            data = parse_json(raw, kind)
-            if not isinstance(data, dict) or type(data.get("isSuccessful")) is not bool:
-                raise Blocked("malformed_acknowledgement")
-            if not data["isSuccessful"]:
-                return HttpResult("broker_response", status, "rejected", time.perf_counter_ns(),
-                                  rejection_reason(data))
-            if not isinstance(data.get("id"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", data["id"]):
-                raise Blocked("malformed_acknowledgement")
-            return HttpResult("broker_response", status, "accepted", time.perf_counter_ns())
+            return classify_order_response(parse_json(raw, kind), status)
         except Blocked as exc:
             if exc.category in ("authentication_rejected", "broker_throttled"):
                 self.verified = False
@@ -1050,7 +1090,10 @@ class DispatchReport:
                 state, detail = "pending_before_initiation", None
             rows.append({"scheduled_attempt": slot, "attempt_number": number, "state": state,
                          "transport": detail, "http_status": result.status if result else None,
-                         "rejection_reason": result.rejection_reason if result else None})
+                         "rejection_reason": result.rejection_reason if result else None,
+                         "rejection_message_state": result.rejection_message_state if result else None,
+                         "acknowledgement_issue": result.acknowledgement_issue if result else None,
+                         "acknowledgement_field_type": result.acknowledgement_field_type if result else None})
         return {"theoretical_attempts": self.planned, "local_initiations": len(snapshot),
                 "stop": self.stop, "capacity_skips": self.capacity_skips,
                 "scheduled_attempts": self.scheduled_attempts,
@@ -1069,6 +1112,9 @@ class DispatchReport:
                               "completion_monotonic_ns": r.completed_ns if r else None,
                               "broker_acceptance": r.acceptance if r else "unknown",
                               "rejection_reason": r.rejection_reason if r else None,
+                              "rejection_message_state": r.rejection_message_state if r else None,
+                              "acknowledgement_issue": r.acknowledgement_issue if r else None,
+                              "acknowledgement_field_type": r.acknowledgement_field_type if r else None,
                               "execution": "unknown"} for n, stamp, r, slot in snapshot]}
 
     def diagnostics(self):
@@ -1108,8 +1154,9 @@ class LiveConsole:
             return False
         return msvcrt.kbhit() and msvcrt.getwch() in ("\x1b", "\x03")
 
-    def frame(self):
-        now = self.clock()
+    def frame(self, now=None):
+        if now is None:
+            now = self.clock()
         count = len(self.report.attempts) if self.report is not None else 0
         stage = "Cancelling" if self.cancel.is_set() else self.stage
         if now < self.start_ns:
@@ -1122,15 +1169,20 @@ class LiveConsole:
                 f"Left {format_duration(remaining)} | Requests {count}")
 
     def _render(self):
-        width = 0
+        previous_stage = None
+        next_update = 0
         try:
             while not self._stop.is_set():
                 if self.poll_cancel():
                     self.cancel.set()
-                line = self.frame()
-                self.stream.write("\r" + line.ljust(width))
-                width = max(width, len(line))
-                self.stream.flush()
+                now = self.clock()
+                line = self.frame(now)
+                stage = line.split(" | ", 1)[0]
+                periodic = stage in {"Countdown", "Ready", "Sending"}
+                if stage != previous_stage or (periodic and now >= next_update):
+                    print(line, file=self.stream, flush=True)
+                    previous_stage = stage
+                    next_update = now + (1_000_000_000 if stage == "Sending" else 15_000_000_000)
                 self._stop.wait(.05)
         except Exception:
             # Console failure must not kill or serialize a handed-off POST.
@@ -1146,8 +1198,6 @@ class LiveConsole:
     def __exit__(self, *_):
         self._stop.set()
         self._worker.join(.25)
-        if not self._worker.is_alive():
-            print(file=self.stream, flush=True)
 
 
 def print_live_summary(report):
@@ -1164,7 +1214,12 @@ def print_live_summary(report):
     if data["rows"]:
         print("Scheduled | Attempt | Outcome | HTTP | Detail")
         for row in data["rows"]:
-            detail = row["rejection_reason"] or row["transport"] or "-"
+            detail = row["acknowledgement_issue"] or row["rejection_reason"] or row["transport"] or "-"
+            context = row["acknowledgement_field_type"]
+            if detail == "unspecified":
+                context = row["rejection_message_state"]
+            if context:
+                detail += f" ({context})"
             print(f"{row['scheduled_attempt']:>9} | {str(row['attempt_number'] or '-'):>7} | "
                   f"{row['state']} | {row['http_status'] or '-'} | {detail}")
     if any(a["rejection_reason"] == "market_entry_time" for a in outcomes):

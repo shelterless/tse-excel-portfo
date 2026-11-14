@@ -341,16 +341,21 @@ class HttpTests(OfflineCase):
             client = server.client()
             self.addCleanup(client.close)
             client.verify()
-            for data, expected in (({"isSuccessful": False, "message": "محدوده زمانی سفارش معتبر نمی‌باشد!"}, "market_entry_time"),
-                                   ({"isSuccessful": False, "omsError": [{"error": "محدوده زمانی سفارش معتبر نمی باشد!"}]}, "market_entry_time"),
-                                   ({"isSuccessful": False, "message": "fake-private-account-123456"}, "unspecified"),
-                                   ({"isSuccessful": False}, "unspecified")):
-                server.ack = data
+            cases = [
+                ({"message": "محدوده زمانی سفارش معتبر نمی‌باشد!"}, "market_entry_time", "recognized"),
+                ({"omsError": [{"error": "محدودهٔ زمانی سفارش، معتبر نمی‌باشد!"}]}, "market_entry_time", "recognized"),
+                ({"message": "fake-private-account-123456"}, "unspecified", "unrecognized"),
+                ({"message": "  ", "omsError": None}, "unspecified", "unavailable"),
+                ({}, "unspecified", "unavailable"),
+            ]
+            for data, reason, message_state in cases:
+                server.ack = {"isSuccessful": False, **data}
                 result = client.submit(b"{}", approved=True)
                 self.assertEqual(result.acceptance, "rejected")
-                self.assertEqual(result.rejection_reason, expected)
+                self.assertEqual(result.rejection_reason, reason)
+                self.assertEqual(result.rejection_message_state, message_state)
                 self.assertNotIn("fake-private", repr(result))
-            self.assertEqual(len(server.received), 4)
+            self.assertEqual(len(server.received), len(cases))
 
     def test_warmup_prepares_distinct_connections_without_any_http_request(self):
         client = poc.NativeHttp(auth(), api_origin="http://127.0.0.1:12345", loopback=True)
@@ -505,6 +510,32 @@ class HttpTests(OfflineCase):
                 self.assertEqual(result.acceptance, acceptance)
                 self.assertNotIn("fake-private", repr(result))
             self.assertEqual(len(server.received), 4)
+
+    def test_malformed_acknowledgement_identifies_field_without_upgrading_acceptance(self):
+        cases = [
+            ([], "response_not_object", "array"),
+            ({}, "success_flag_missing", None),
+            ({"isSuccessful": None}, "success_flag_wrong_type", "null"),
+            ({"isSuccessful": "true"}, "success_flag_wrong_type", "string"),
+            ({"isSuccessful": 1}, "success_flag_wrong_type", "number"),
+            ({"isSuccessful": True}, "order_id_missing", None),
+            ({"isSuccessful": True, "id": 123}, "order_id_wrong_type", "number"),
+            ({"isSuccessful": True, "id": None}, "order_id_wrong_type", "null"),
+            ({"isSuccessful": True, "id": "fake-private/order-id"}, "order_id_invalid_format", "string"),
+        ]
+        with Server() as server:
+            client = server.client()
+            self.addCleanup(client.close)
+            client.verify()
+            for ack, issue, field_type in cases:
+                with self.subTest(issue=issue, field_type=field_type):
+                    server.ack = ack
+                    result = client.submit(b"{}", approved=True)
+                    self.assertEqual((result.category, result.acceptance), ("malformed_acknowledgement", "unknown"))
+                    self.assertEqual((result.acknowledgement_issue, result.acknowledgement_field_type),
+                                     (issue, field_type))
+                    self.assertNotIn("fake-private", repr(result))
+            self.assertEqual(len(server.received), len(cases))
 
     def test_reused_connection_restores_timeout_budget_per_request(self):
         with Server() as server:
@@ -1589,7 +1620,7 @@ class TraceTests(OfflineCase):
     def test_loopback_http_traces_only_sanitized_completion_facts(self):
         for ack, expected in (({"isSuccessful": True, "id": "fake-private-broker-id"}, "accepted"),
                               ({"isSuccessful": False, "message": "fake-private-message"}, "rejected"),
-                              ({"isSuccessful": True, "private": "fake-private-response"}, "unknown")):
+                              ({"isSuccessful": True, "id": "fake-private/response"}, "unknown")):
             with self.subTest(expected=expected), Server() as server:
                 server.ack = {**ack, "account": "fake-private-account", "balance": "fake-private-balance"}
                 client = server.client()
@@ -1597,17 +1628,31 @@ class TraceTests(OfflineCase):
                 client.verify()
                 trace = self.new_trace()
                 report = poc.dispatch(lambda body, begin: client.submit(body, approved=True, on_initiated=begin),
-                                      b'{"private":"fake-private-payload"}', poc.Window.from_inputs("0.01", 100),
-                                      time.perf_counter_ns(), approved=True, trace=trace)
+                                      b'{"private":"fake-private-payload"}', poc.Window.from_inputs("0.2", 350),
+                                      time.perf_counter_ns() + 50_000_000, approved=True, trace=trace)
                 event = next(e for e in self.events(trace) if e["event"] == "attempt_result_completed")
                 self.assertEqual(len(server.received), 1)
                 self.assertEqual(report.attempts[0].result.acceptance, expected)
                 self.assertEqual(event["broker_acceptance"], expected)
                 self.assertEqual(event["http_status"], 200)
                 self.assertGreater(event["elapsed_ns"], 0)
+                row = report.diagnostics()["rows"][0]
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    poc.print_live_summary(report)
+                if expected == "unknown":
+                    for record in (event, row):
+                        self.assertEqual(record["acknowledgement_issue"], "order_id_invalid_format")
+                        self.assertEqual(record["acknowledgement_field_type"], "string")
+                    self.assertIn("order_id_invalid_format (string)", output.getvalue())
+                if expected == "rejected":
+                    self.assertEqual(event["rejection_message_state"], "unrecognized")
+                    self.assertEqual(row["rejection_message_state"], "unrecognized")
+                    self.assertIn("unspecified (unrecognized)", output.getvalue())
                 raw = trace.path.read_text(encoding="utf-8")
                 for secret in (FAKE_TOKEN, FAKE_COOKIE, ISIN, "fake-private", "TEST", "Authorization", "buyPowerT2"):
                     self.assertNotIn(secret, raw)
+                    self.assertNotIn(secret, json.dumps(report.diagnostics()))
+                    self.assertNotIn(secret, output.getvalue())
 
     def boundary_dispatch(self, client, trace, *, prepare=None):
         clock = FakeClock()
@@ -1839,6 +1884,28 @@ class ConsoleTests(OfflineCase):
                              stream=io.StringIO(), poll_cancel=lambda: True):
             self.assertTrue(cancel.wait(.5))
 
+    def test_progress_uses_complete_lines_and_does_not_repeat_finishing(self):
+        clock = FakeClock()
+        output = io.StringIO()
+        console = poc.LiveConsole(2_000_000_000, poc.Window.from_inputs(3, 350), threading.Event(),
+                                  stream=output, clock=clock, poll_cancel=lambda: False)
+        console.stage = "Ready"
+        times = iter((50_000_000, 2_000_000_000, 2_050_000_000, 3_050_000_000,
+                      5_000_000_000, 5_050_000_000))
+
+        def advance(_):
+            current = next(times, None)
+            if current is None:
+                console._stop.set()
+            else:
+                clock.value = current
+
+        with patch.object(console._stop, "wait", side_effect=advance):
+            console._render()
+        self.assertNotIn("\r", output.getvalue())
+        self.assertEqual([line.split(" | ", 1)[0] for line in output.getvalue().splitlines()],
+                         ["Ready", "Sending", "Sending", "Finishing"])
+
     def test_summary_distinguishes_acknowledgements_and_unknown_execution(self):
         report = poc.DispatchReport(4, attempts=[
             poc.Attempt(1, 1, poc.HttpResult("broker_response", 200, "accepted")),
@@ -1859,7 +1926,7 @@ class ConsoleTests(OfflineCase):
                 return True
 
             def write(self, value):
-                if value.startswith("\r"):
+                if "Requests " in value:
                     time.sleep(.4)
                 return super().write(value)
 
