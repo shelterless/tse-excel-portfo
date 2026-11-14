@@ -78,6 +78,8 @@ class Blocked(Exception):
     def __init__(self, category, status=None):
         self.category = category
         self.status = status
+        self.read_operation = None
+        self.exchange_phase = None
         super().__init__(category)
 
 
@@ -119,7 +121,8 @@ class RunTrace:
     EVENTS = frozenset("""run_started authentication_started authentication_completed
         native_verification_completed preflight_completed user_confirmation
         connection_warmup_started connection_warmup_completed final_preflight_completed
-        window_configured final_preflight_started connection_refresh_started connection_refresh_completed
+        window_configured initial_preflight_started final_preflight_started preflight_failed
+        connection_refresh_started connection_refresh_completed
         dispatch_started dispatch_window_ended drain_started drain_completed
         drain_deadline_reached dispatch_report_snapshot run_completed run_aborted
         attempt_initiated attempt_result_completed attempt_pending_at_snapshot
@@ -144,7 +147,9 @@ class RunTrace:
         "completion_observation": {"until_trace_close"},
         "stop_category": TRACE_STOPS,
         "trace_failure": {"trace_writer_failed", "trace_queue_exhausted", "trace_event_invalid"},
-        "exchange_phase": {"pool", "prepare", "connect", "admission", "send", "headers", "body"},
+        "exchange_phase": {"pool", "prepare", "connect", "admission", "send", "headers", "body", "status", "decode"},
+        "preflight_phase": {"initial", "final"},
+        "read_operation": {"symbols", "market", "buying_power", "drafts"},
     }
 
     def __init__(self, run_id, *, directory=None, capacity=4096):
@@ -573,6 +578,24 @@ class NativeHttp:
                 conn.close()
             self._pool.put_nowait(conn if reusable else None)
 
+    def discard_idle_connections(self):
+        """Keep the authenticated session and replace sockets left idle while waiting."""
+        with self._lock:
+            if self._closed:
+                raise Blocked("transport_closed")
+            count = 0
+            try:
+                while True:
+                    conn = self._pool.get_nowait()
+                    count += 1
+                    if conn is not None:
+                        conn.close()
+            except queue.Empty:
+                pass
+            finally:
+                for _ in range(count):
+                    self._pool.put_nowait(None)
+
     def warm_connections(self, count, deadline_ns):
         """Prepare TCP/TLS only, with no HTTP request, before the timed window.
 
@@ -649,7 +672,9 @@ class NativeHttp:
         except queue.Empty:
             if observe is not None:
                 observe("http_exchange_failed", exchange_phase="pool", transport="connection_capacity_timeout")
-            raise Blocked("connection_capacity_timeout") from None
+            failure = Blocked("connection_capacity_timeout")
+            failure.exchange_phase = "pool"
+            raise failure from None
         reusable = False
         status = None
         phase = "prepare"
@@ -722,7 +747,9 @@ class NativeHttp:
                 category = "transport_failure"
             if observe is not None:
                 observe("http_exchange_failed", exchange_phase=phase, transport=category, http_status=status)
-            raise Blocked(category, status) from None
+            failure = Blocked(category, status)
+            failure.exchange_phase = phase
+            raise failure from None
         finally:
             self._release(conn, reusable)
 
@@ -741,13 +768,20 @@ class NativeHttp:
                 or (path == MARKET and isinstance(payload, list) and len(payload) == 1
                     and isinstance(payload[0], str) and re.fullmatch(r"[A-Z0-9]{12}", payload[0]))):
             raise Blocked("operation_not_allowed")
+        step = None
         try:
             status, kind, raw = self._exchange("GET" if payload is None else "POST", path,
                                              None if payload is None else decimal_json(payload).encode())
+            step = "status"
             self._status(status)
+            step = "decode"
             return parse_json(raw, kind)
-        except Blocked:
+        except Blocked as exc:
             self.verified = False
+            exc.read_operation = {MONEY: "buying_power", DRAFTS: "drafts", SYMBOLS: "symbols", MARKET: "market"}[path]
+            if step is not None:
+                exc.exchange_phase = step
+                exc.status = status
             raise
 
     def verify(self):
@@ -1423,6 +1457,17 @@ def main(argv=None):
             trace.emit(event, **fields)
             trace.check()
 
+    def checked_preflight(client, draft, quantity, price, phase):
+        stage(f"{phase}_preflight_started")
+        try:
+            return preflight(client, draft, quantity, price)
+        except Blocked as exc:
+            details = dict(preflight_phase=phase, read_operation=exc.read_operation,
+                           exchange_phase=exc.exchange_phase, http_status=exc.status)
+            diagnostics.update(details)
+            stage("preflight_failed", stop_category=exc.category, **details)
+            raise
+
     try:
         if args.live:
             trace = RunTrace(diagnostics["run_id"])
@@ -1465,7 +1510,8 @@ def main(argv=None):
               duration_ns=window.duration_ns, interval_ns=window.interval_ns, planned_attempts=window.attempts)
         if args.live and window.interval_ns < MIN_LIVE_INTERVAL_NS:
             raise Blocked("live_interval_below_300_ms")
-        initial = preflight(client, draft, quantity, price)
+        client.discard_idle_connections()
+        initial = checked_preflight(client, draft, quantity, price, "initial")
         stage("preflight_completed")
         print("WARNING: " + MARKET_TIME_WARNING)
         order = initial.order
@@ -1494,13 +1540,13 @@ def main(argv=None):
                     raise Blocked("cancelled")
                 progress.stage = "Preparing connections"
                 stage("connection_warmup_started")
+                client.discard_idle_connections()
                 client.warm_connections(client.dispatch_capacity(window), start_ns)
                 stage("connection_warmup_completed")
                 if cancel.is_set():
                     raise Blocked("cancelled")
                 progress.stage = "Final preflight"
-                stage("final_preflight_started")
-                fresh = preflight(client, draft, quantity, price)
+                fresh = checked_preflight(client, draft, quantity, price, "final")
                 stage("final_preflight_completed")
                 if cancel.is_set():
                     raise Blocked("cancelled")
@@ -1526,6 +1572,8 @@ def main(argv=None):
         if client is not None:
             diagnostics["native_read_only"] = client.read_outcome
         print("Stopped: " + exc.category.replace("_", " ") + ". No automatic replay.")
+        if exc.read_operation:
+            print(f"Read failed: {exc.read_operation} ({exc.exchange_phase or 'unknown phase'}).")
         exit_code = 2
     except KeyboardInterrupt:
         diagnostics["stop"] = "cancelled"

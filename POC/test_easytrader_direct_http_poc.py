@@ -1077,6 +1077,54 @@ class TraceTests(OfflineCase):
         self.assertEqual(sum(n == "attempt_initiated" for n in names), 2)
         self.assertEqual(sum(n == "attempt_result_completed" for n in names), 2)
 
+    def test_preflight_after_prompt_uses_fresh_socket_and_reports_failed_read(self):
+        for disconnect in (False, True):
+            with self.subTest(disconnect=disconnect), Server() as server:
+                client = server.client()
+                handler = server.httpd.RequestHandlerClass
+                original_request = poc.http.client.HTTPConnection.request
+                original_handle = handler.handle_api
+                reads = {}
+
+                def request(connection, method, path, *args, **kwargs):
+                    reads[path] = connection
+                    if path == poc.SYMBOLS and connection is reads[poc.DRAFTS]:
+                        raise poc.http.client.RemoteDisconnected("fake-idle-socket")
+                    return original_request(connection, method, path, *args, **kwargs)
+
+                def handle(connection):
+                    if disconnect and connection.path == poc.SYMBOLS:
+                        connection.close_connection = True
+                        connection.connection.shutdown(socket.SHUT_RDWR)
+                        return
+                    original_handle(connection)
+
+                with patch.object(handler, "handle_api", new=handle), \
+                        patch.object(poc.http.client.HTTPConnection, "request", new=request), \
+                        patch.object(poc, "authenticate_browser", return_value=auth()), \
+                        patch.object(poc, "NativeHttp", return_value=client), \
+                        patch.object(poc, "local_target", return_value=AT), \
+                        patch.object(poc, "confirm_order", return_value=False), \
+                        patch("builtins.input", side_effect=["1", "", "", "1", "1000"]), \
+                        contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(poc.main(["--authenticate", "--live", "--diagnostics"]), 2 if disconnect else 0)
+
+                self.assertIsNot(reads[poc.DRAFTS], reads[poc.SYMBOLS])
+                self.assertEqual(server.received, [])
+                details = json.loads(next(line for line in output.getvalue().splitlines() if line.startswith("{")))
+                path, = Path(self.trace_directory.name).glob(f"*_{details['run_id']}*.jsonl")
+                events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+                self.assertFalse(any(e["event"] == "dispatch_started" for e in events))
+                if disconnect:
+                    failure = next(e for e in events if e["event"] == "preflight_failed")
+                    self.assertEqual(details["stop"], "transport_failure")
+                    for record in (failure, details):
+                        self.assertEqual(record["preflight_phase"], "initial")
+                        self.assertEqual(record["read_operation"], "symbols")
+                        self.assertEqual(record["exchange_phase"], "headers")
+                else:
+                    self.assertEqual(details["stop"], "confirmation_cancelled")
+
     def test_final_preflight_closed_connection_is_replaced_before_dispatch(self):
         for refresh_fails in (False, True):
             with self.subTest(refresh_fails=refresh_fails), Server() as server:
